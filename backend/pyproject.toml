@@ -1,0 +1,27 @@
+[project]
+name = "script2broll-backend"
+version = "0.1.0"
+description = "Script2Broll backend: semantic B-roll retrieval API"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.142.2",
+    "google-genai>=2.28.0",
+    "httpx>=0.28.1",
+    "pgvector>=0.5.0",
+    "psycopg[binary]>=3.3.6",
+    "pydantic-settings>=2.15.0",
+    "sqlalchemy>=2",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "respx>=0.23.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: needs a live PostgreSQL+pgvector database (DATABASE_URL)",
+]
