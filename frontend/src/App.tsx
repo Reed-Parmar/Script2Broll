@@ -1,10 +1,26 @@
 import { useRef, useState, type FormEvent } from 'react'
-import { SearchError, searchVideos, type SearchResponse } from './api/client'
+import { SearchError, searchVideos, type SearchMode, type SearchResponse } from './api/client'
+import EditorialPanel from './components/EditorialPanel'
 import HealthPanel from './components/HealthPanel'
 import ResultCard from './components/ResultCard'
 
 const TOP_K = 12
-const EXAMPLES = ['people charging an electric vehicle', 'busy city traffic', 'doctor treating a patient', 'mountain landscape']
+const MODES: Record<SearchMode, { label: string; placeholder: string; examples: string[] }> = {
+  semantic: {
+    label: 'Semantic search',
+    placeholder: 'e.g. people charging an electric vehicle',
+    examples: ['people charging an electric vehicle', 'busy city traffic', 'doctor treating a patient', 'mountain landscape'],
+  },
+  editorial: {
+    label: 'Editorial search',
+    placeholder: 'Paste a script sentence, e.g. "Despite rapid growth, charging infrastructure remains a major obstacle."',
+    examples: [
+      'Despite the rapid growth of electric vehicles, charging infrastructure remains a major obstacle.',
+      'Every morning, millions of commuters pour into the city centre.',
+      'For many families, a hospital visit can mean weeks of lost income.',
+    ],
+  },
+}
 
 type State =
   | { kind: 'idle' }
@@ -14,6 +30,7 @@ type State =
 
 export default function App() {
   const [query, setQuery] = useState('')
+  const [mode, setMode] = useState<SearchMode>('semantic')
   const [state, setState] = useState<State>({ kind: 'idle' })
   const inFlight = useRef<AbortController | null>(null)
 
@@ -28,7 +45,7 @@ export default function App() {
     inFlight.current = controller
     setState({ kind: 'loading' })
     try {
-      const response = await searchVideos(trimmed, TOP_K, controller.signal)
+      const response = await searchVideos(trimmed, TOP_K, mode, controller.signal)
       setState({ kind: 'done', response })
     } catch (error) {
       if (controller.signal.aborted) return
@@ -46,11 +63,33 @@ export default function App() {
       <h1 className="text-2xl font-semibold">Script2Broll</h1>
       <p className="mt-1 text-slate-600">Semantic B-roll search: describe the shot, get matching stock clips.</p>
 
-      <form onSubmit={onSubmit} className="mt-6 flex gap-2">
+      <div role="radiogroup" aria-label="Search mode" className="mt-6 inline-flex rounded border border-slate-300 p-0.5 text-sm">
+        {(Object.keys(MODES) as SearchMode[]).map((m) => (
+          <button
+            key={m}
+            role="radio"
+            aria-checked={mode === m}
+            onClick={() => {
+              inFlight.current?.abort()
+              setMode(m)
+              setState({ kind: 'idle' })
+            }}
+            className={`rounded px-3 py-1 ${mode === m ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>
+            {MODES[m].label}
+          </button>
+        ))}
+      </div>
+      {mode === 'editorial' && (
+        <p className="mt-2 text-sm text-slate-500">
+          A language model interprets what the line is trying to show, then the visual description is searched.
+        </p>
+      )}
+
+      <form onSubmit={onSubmit} className="mt-3 flex gap-2">
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="e.g. people charging an electric vehicle"
+          placeholder={MODES[mode].placeholder}
           maxLength={500}
           aria-label="Search query"
           className="min-w-0 flex-1 rounded border border-slate-300 px-3 py-2 focus:border-slate-500 focus:outline-none"
@@ -59,25 +98,28 @@ export default function App() {
           type="submit"
           disabled={state.kind === 'loading'}
           className="rounded bg-slate-900 px-5 py-2 text-white hover:bg-slate-700 disabled:opacity-60">
-          {state.kind === 'loading' ? 'Searching…' : 'Search'}
+          {state.kind === 'loading' ? (mode === 'editorial' ? 'Analysing…' : 'Searching…') : 'Search'}
         </button>
       </form>
       <div className="mt-2 flex flex-wrap gap-2 text-sm">
-        {EXAMPLES.map((example) => (
+        {MODES[mode].examples.map((example) => (
           <button
             key={example}
             onClick={() => {
               setQuery(example)
               void runSearch(example)
             }}
-            className="rounded-full border border-slate-200 px-3 py-1 text-slate-600 hover:bg-slate-100">
+            className="max-w-full truncate rounded-full border border-slate-200 px-3 py-1 text-slate-600 hover:bg-slate-100">
             {example}
           </button>
         ))}
       </div>
 
       <section className="mt-6" aria-live="polite">
-        {state.kind === 'loading' && <p className="text-slate-500">Searching…</p>}
+        {state.kind === 'loading' && (
+          <p className="text-slate-500">{mode === 'editorial' ? 'Analysing editorial intent, then searching…' : 'Searching…'}</p>
+        )}
+        {state.kind === 'done' && state.response.editorial && <EditorialPanel editorial={state.response.editorial} />}
         {state.kind === 'error' && (
           <p role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-red-800">
             {state.message}
@@ -89,8 +131,8 @@ export default function App() {
         {state.kind === 'done' && state.response.results.length > 0 && (
           <>
             <p className="mb-3 text-sm text-slate-500">
-              {state.response.results.length} results for “{state.response.query}” · ranked by cosine similarity (
-              {state.response.model}) · {Math.round(state.response.timings_ms.total ?? 0)} ms
+              {state.response.results.length} results for “{state.response.retrieval_query}” · {MODES[state.response.mode].label.toLowerCase()} ·
+              ranked by cosine similarity ({state.response.model}) · {Math.round(state.response.timings_ms.total ?? 0)} ms
             </p>
             <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {state.response.results.map((result, i) => (

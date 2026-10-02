@@ -6,6 +6,7 @@ no client-supplied paths are accepted.
 """
 
 import time
+from enum import StrEnum
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,7 +17,9 @@ from sqlalchemy.orm import Session
 from app.config import Settings, get_settings
 from app.db.models import Video
 from app.db.session import get_session
+from app.api.editorial import MAX_TEXT_LENGTH, clean_text, get_editorial_analyzer
 from app.providers import factory
+from app.services.editorial import EditorialIntentResult
 from app.services.ingestion import thumbnail_path
 from app.services.retrieval import SemanticSearchService
 
@@ -25,17 +28,20 @@ router = APIRouter(prefix="/v1", tags=["search"])
 SOURCE_NAMES = {"pixabay": "Pixabay"}
 
 
+class SearchMode(StrEnum):
+    SEMANTIC = "semantic"  # query text -> embedding search
+    EDITORIAL = "editorial"  # script text -> editorial analysis -> retrieval query -> embedding search
+
+
 class SearchRequest(BaseModel):
-    query: str = Field(max_length=500)
+    query: str = Field(max_length=MAX_TEXT_LENGTH)
     top_k: int = Field(default=12, ge=1, le=50)
+    mode: SearchMode = SearchMode.SEMANTIC
 
     @field_validator("query")
     @classmethod
     def _not_blank(cls, value: str) -> str:
-        value = " ".join(value.split())
-        if not value:
-            raise ValueError("query must not be empty")
-        return value
+        return clean_text(value)
 
 
 class VideoOut(BaseModel):
@@ -74,6 +80,9 @@ class SearchResult(VideoOut):
 
 class SearchResponse(BaseModel):
     query: str
+    mode: SearchMode
+    retrieval_query: str  # the text actually embedded and searched
+    editorial: EditorialIntentResult | None = None  # set in editorial mode
     model: str
     results: list[SearchResult]
     timings_ms: dict[str, float]
@@ -88,15 +97,30 @@ def search(
     request: SearchRequest,
     service: SemanticSearchService = Depends(get_search_service),
     session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
 ) -> SearchResponse:
     started = time.perf_counter()
-    outcome = service.search(session, request.query, request.top_k)
+    editorial, retrieval_query, timings = None, request.query, {}
+    if request.mode == SearchMode.EDITORIAL:
+        # Built only in this mode, so semantic search never depends on the LLM being configured.
+        editorial = get_editorial_analyzer(settings).analyze(request.query)
+        retrieval_query = editorial.retrieval_query
+        timings["analysis"] = round((time.perf_counter() - started) * 1000, 1)
+    outcome = service.search(session, retrieval_query, request.top_k)
     results = [
         SearchResult(score=round(hit.score, 4), **VideoOut.from_model(hit.video).model_dump())
         for hit in outcome.hits
     ]
-    timings = outcome.timings_ms | {"total": round((time.perf_counter() - started) * 1000, 1)}
-    return SearchResponse(query=request.query, model=service.embedder.model_name, results=results, timings_ms=timings)
+    timings |= outcome.timings_ms | {"total": round((time.perf_counter() - started) * 1000, 1)}
+    return SearchResponse(
+        query=request.query,
+        mode=request.mode,
+        retrieval_query=retrieval_query,
+        editorial=editorial,
+        model=service.embedder.model_name,
+        results=results,
+        timings_ms=timings,
+    )
 
 
 def _video_or_404(session: Session, video_id: int) -> Video:

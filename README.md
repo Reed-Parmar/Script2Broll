@@ -2,8 +2,9 @@
 
 AI-powered semantic B-roll retrieval: describe a shot in plain language, get matching stock footage.
 
-**Current stage:** Phase 1, semantic search MVP. A text query is embedded and matched against
-clip-level visual embeddings in pgvector by cosine similarity.
+**Current stage:** Phase 3, editorial intent. A text query is embedded and matched against
+clip-level visual embeddings in pgvector by cosine similarity (semantic search). Optionally, a script
+sentence is first interpreted by a language model (editorial search, below).
 
 **Temporal localization is not implemented in the Phase 1 MVP.** The searchable unit is a whole
 clip; the system does not find where inside a clip a query matches.
@@ -40,6 +41,42 @@ The search service and ingestion depend only on the `EmbeddingProvider`, `Vector
 
 Per clip, `videos.extra.embedding` records `{model, dim, frames, aggregation}`.
 
+## Editorial search (Phase 3)
+
+```
+script sentence ──▶ EditorialIntentAnalyzer ──▶ EditorialAnalysis (validated) ──▶ build_retrieval_query
+                    (LLMProvider: Ollama/Gemini,    topic, editorial_intent,        (deterministic)
+                     JSON-schema output)            visual_role, visual_description        │
+                                                                                            ▼
+                                                     existing SemanticSearchService (CLIP + pgvector)
+```
+
+`services/editorial.py` holds the layer. The LLM only interprets language; it never embeds or ranks.
+
+- **Schema:** `topic`, `editorial_intent` (one of `context, introduction, explanation, problem, cause,
+  effect, evidence, comparison, process, transition, human_impact, conclusion`), `visual_role`,
+  `visual_description`, plus `original_text` and `retrieval_query` added by the backend.
+- **Validation:** the model is asked for schema-constrained JSON, then the reply is parsed and validated
+  with Pydantic. Malformed JSON, missing/empty fields, wrong types or an unknown intent raise an error
+  (HTTP `502`) instead of reaching search. Extra fields from the model are ignored.
+- **Retrieval query:** the visual description (a stock-footage-style caption of one filmable shot),
+  with the topic prepended only if the description doesn't already name it, capped at 32 words for
+  CLIP. Intent and visual role are left out on purpose: they describe purpose, which no frame shows.
+- **LLM:** `LLM_PROVIDER=ollama` (local, free; default model `qwen2.5:3b`, `ollama pull qwen2.5:3b`)
+  or `gemini` (`GEMINI_LLM_MODEL`; needs a key with billing).
+
+```bash
+curl -X POST localhost:8000/v1/editorial/analyze -H "Content-Type: application/json" \
+  -d '{"text": "Despite the rapid growth of electric vehicles, charging infrastructure remains a major obstacle."}'
+curl -X POST localhost:8000/v1/search -H "Content-Type: application/json" \
+  -d '{"query": "<script sentence>", "mode": "editorial", "top_k": 6}'
+```
+
+Search responses include `mode` (`semantic` default, or `editorial`), `retrieval_query` (the text
+that was actually embedded) and, in editorial mode, the full `editorial` analysis plus an `analysis`
+timing. Semantic search never calls the LLM. The UI has a Semantic / Editorial toggle and shows the
+interpretation above the results.
+
 ## Layout
 
 ```
@@ -50,12 +87,13 @@ backend/            FastAPI app (Python 3.12, uv)
     api/            health.py; search.py (/v1/search, /v1/videos/...)
     db/             SQLAlchemy engine/session, models (videos, embeddings)
     providers/      Replaceable external services
-      llm/            LLMProvider          -> GeminiLLMProvider (unused in Phase 1)
+      llm/            LLMProvider          -> OllamaLLMProvider, GeminiLLMProvider (editorial intent)
       embedding/      EmbeddingProvider    -> ClipEmbeddingProvider (default), GeminiEmbeddingProvider
       video_source/   VideoSourceProvider  -> PixabayVideoProvider
       factory.py      config name -> concrete provider / vector store
     vectorstore/    VectorStore -> PgVectorStore
-    services/       frames.py (FFmpeg), ingestion.py, retrieval.py (SemanticSearchService)
+    services/       frames.py (FFmpeg), ingestion.py, retrieval.py (SemanticSearchService),
+                    editorial.py (editorial intent + retrieval query)
   scripts/
     init_db.py      pgvector extension + tables (+ dimension check)
     ingest.py       Build the library from Pixabay
@@ -91,7 +129,10 @@ npm run dev                     # http://localhost:5173 (proxies /api -> :8000)
 | `DATABASE_URL` | local docker-compose DB | PostgreSQL + pgvector |
 | `POSTGRES_PORT` | `5432` | Host port docker-compose publishes the DB on (use e.g. `5433` if 5432 is taken) |
 | `GEMINI_API_KEY` | – | Gemini LLM (unused by search); embeddings only if `EMBEDDING_PROVIDER=gemini` (needs billing) |
-| `GEMINI_LLM_MODEL` | `gemini-2.5-flash` | LLM (not used by search) |
+| `LLM_PROVIDER` | `gemini` | Language model for editorial intent: `gemini` or `ollama` |
+| `GEMINI_LLM_MODEL` | `gemini-2.5-flash` | Gemini LLM model |
+| `OLLAMA_URL` / `OLLAMA_MODEL` | `http://localhost:11434` / `qwen2.5:3b` | Local Ollama server and model |
+| `LLM_TIMEOUT_SECONDS` | `60` | Per-request LLM timeout |
 | `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `clip` / `ViT-B-32/laion2b_s34b_b79k` / `512` | Embedding space (CLIP model is `<architecture>/<pretrained tag>`; weights download to the Hugging Face cache on first use). Changing any requires re-embedding; changing the dimension also requires recreating `embeddings` |
 | `PIXABAY_API_KEY` | – | Pixabay video search (backend only) |
 | `DATA_DIR` | `<repo>/data` | Downloaded clips and thumbnails (git-ignored) |
@@ -147,7 +188,8 @@ configured or database unavailable; messages never include keys or raw upstream 
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /v1/search` | Semantic search |
+| `POST /v1/search` | Semantic search; `"mode": "editorial"` analyses the text first |
+| `POST /v1/editorial/analyze` | Editorial-intent analysis only (`{"text": ...}`) |
 | `GET /v1/videos/{id}` | Clip metadata |
 | `GET /v1/videos/{id}/file` | Clip stream (supports HTTP Range for seeking) |
 | `GET /v1/videos/{id}/thumbnail` | Thumbnail JPEG |
@@ -161,7 +203,7 @@ prints top results with scores, ingestion topic, tags and thumbnail paths for hu
 |------------------------|--------------------------------------------------|
 | `GET /health`          | API process is up                                |
 | `GET /health/database` | PostgreSQL reachable, pgvector installed, stored embedding dimension |
-| `GET /health/ai`       | Configured embedding provider loads and embeds (CLIP) or key/model valid (Gemini); LLM state reported but not required |
+| `GET /health/ai`       | Configured embedding provider loads and embeds (CLIP) or key/model valid (Gemini); LLM state (Ollama model pulled / Gemini key) reported but not required |
 | `GET /health/pixabay`  | Pixabay key valid; video search responds         |
 
 They return `200 {"status":"ok"}` or `503` with `not_configured` / `error`. Responses never contain secrets.
@@ -172,7 +214,9 @@ With Gemini embeddings, `/health/ai` only reads model metadata (free); it does n
 ```bash
 cd backend
 uv run pytest                   # unit tests mock CLIP/Gemini/Pixabay; integration tests use the real
-                                # DB and FFmpeg (skipped if unavailable) with a fake embedder
+                                # DB and FFmpeg (skipped if unavailable) with a fake embedder;
+                                # LLM replies are mocked
+RUN_CLIP_MODEL_TESTS=1 RUN_LLM_TESTS=1 uv run pytest   # also run the real CLIP model / configured LLM
 ```
 
 ## Known limitations
@@ -185,9 +229,11 @@ uv run pytest                   # unit tests mock CLIP/Gemini/Pixabay; integrati
   "nearest available", not "relevant". Scores are only comparable within one model.
 - No migration tool: schema changes are applied by `init_db` (additive `ALTER ... IF NOT EXISTS`).
 - Ingestion is sequential and synchronous (CLI only; no ingestion API).
+- Editorial analysis is one sentence at a time (max 500 chars) with no script context; its quality
+  depends on the LLM (a small local model is fast and free but less nuanced than a hosted one).
 
 ## Security
 
 - All API keys live in `.env` (git-ignored). Only the backend reads them.
-- The frontend only calls our backend. Pixabay and Gemini requests never originate in the browser;
+- The frontend only calls our backend. Pixabay, Gemini and Ollama requests never originate in the browser;
   clips and thumbnails are served by the backend by video id (no client-supplied paths).

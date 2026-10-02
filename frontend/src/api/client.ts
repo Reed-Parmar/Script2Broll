@@ -21,8 +21,23 @@ export interface SearchResult {
   thumbnail_url: string
 }
 
+export type SearchMode = 'semantic' | 'editorial'
+
+export interface EditorialIntentResult {
+  original_text: string
+  topic: string
+  editorial_intent: string
+  visual_role: string
+  visual_description: string
+  retrieval_query: string
+}
+
 export interface SearchResponse {
   query: string
+  mode: SearchMode
+  /** The text that was actually embedded and searched. */
+  retrieval_query: string
+  editorial: EditorialIntentResult | null
   model: string
   results: SearchResult[]
   timings_ms: Record<string, number>
@@ -44,13 +59,18 @@ export async function getHealth(path: string): Promise<HealthResult> {
 
 export class SearchError extends Error {}
 
-export async function searchVideos(query: string, topK: number, signal?: AbortSignal): Promise<SearchResponse> {
+export async function searchVideos(
+  query: string,
+  topK: number,
+  mode: SearchMode,
+  signal?: AbortSignal,
+): Promise<SearchResponse> {
   let response: Response
   try {
     response = await fetch(`${API_BASE}/v1/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, top_k: topK }),
+      body: JSON.stringify({ query, top_k: topK, mode }),
       signal,
     })
   } catch (error) {

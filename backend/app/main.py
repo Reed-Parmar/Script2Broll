@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api import health, search
+from app.api import editorial, health, search
 from app.config import get_settings
 from app.providers.errors import ProviderError, ProviderNotConfigured
 
@@ -36,6 +36,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(SQLAlchemyError, _database_error)
     app.include_router(health.router)
     app.include_router(search.router)
+    app.include_router(editorial.router)
     return app
 
 
