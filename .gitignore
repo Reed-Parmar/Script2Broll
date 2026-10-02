@@ -13,12 +13,6 @@ __pycache__/
 node_modules/
 dist/
 
-# Media / local data (B-roll downloads, extracted frames, datasets)
-data/
-*.mp4
-*.mov
-*.webm
-*.zip
 
 # OS / editor
 .DS_Store
