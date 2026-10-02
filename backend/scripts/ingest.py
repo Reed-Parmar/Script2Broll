@@ -1,12 +1,13 @@
 """Build the B-roll library from Pixabay: search -> download -> 8 frames -> embeddings -> pgvector.
 
 Idempotent: re-running never duplicates clips and only embeds clips that have no embedding
-for the current EMBEDDING_MODEL. If it stops (e.g. Gemini quota), re-run to resume.
+for the current EMBEDDING_MODEL. If it stops (e.g. an API quota), re-run to resume.
 
 Usage (from backend/):
   uv run python -m scripts.ingest                                    # dev dataset: SEED_TOPICS x 3
   uv run python -m scripts.ingest --queries "ev charging, city traffic" --per-query 5
   uv run python -m scripts.ingest --pending                          # only resume registered clips
+  uv run python -m scripts.ingest --local [--limit 2]                # index data/videos/*.mp4, no downloads
 """
 
 import argparse
@@ -17,7 +18,7 @@ import time
 from app.config import get_settings
 from app.db.session import get_engine, vector_column_dim
 from app.providers import factory
-from app.providers.errors import ProviderError
+from app.providers.errors import ProviderError, ProviderNotConfigured
 from app.services.ingestion import IngestionService
 
 # Deliberately distinct categories (people, business, tech, transport, nature, science,
@@ -45,6 +46,8 @@ def main() -> int:
     parser.add_argument("--queries", help="Comma-separated search queries (default: SEED_TOPICS)")
     parser.add_argument("--per-query", type=int, default=3, help="Clips to ingest per query (default 3)")
     parser.add_argument("--pending", action="store_true", help="Only embed already-registered clips")
+    parser.add_argument("--local", action="store_true", help="Index clips already in DATA_DIR/videos (no downloads)")
+    parser.add_argument("--limit", type=int, help="With --local: index at most this many files (e.g. a smoke test)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     # httpx logs full request URLs at INFO, and Pixabay URLs carry the API key.
@@ -64,15 +67,24 @@ def main() -> int:
 
     started = time.perf_counter()
     try:
+        try:
+            source = factory.build_video_source(settings)
+        except ProviderNotConfigured:
+            if not args.local:
+                raise
+            source = None  # local files can be indexed without attribution metadata
+            print("PIXABAY_API_KEY not set: indexing local files without creator/tags metadata.", file=sys.stderr)
         service = IngestionService(
-            source=factory.build_video_source(settings),
+            source=source,
             embedder=factory.build_embedding_provider(settings),
             store=factory.build_vector_store(),
             engine=engine,
             data_dir=settings.data_dir,
             frames_per_video=settings.frames_per_video,
         )
-        if args.pending:
+        if args.local:
+            print(service.ingest_local(args.limit))
+        elif args.pending:
             print(service.embed_pending())
         else:
             queries = [q.strip() for q in args.queries.split(",")] if args.queries else SEED_TOPICS

@@ -8,7 +8,7 @@ from app.providers import factory
 from app.providers.embedding import gemini
 from app.providers.embedding.base import l2_normalize, mean_vector
 from app.providers.errors import ProviderError
-from tests.conftest import FAKE_GEMINI_KEY, make_settings
+from tests.conftest import FAKE_GEMINI_KEY, GEMINI_EMBEDDING, make_settings
 
 DIM = 768
 
@@ -45,7 +45,7 @@ def test_mean_vector_rejects_empty_and_ragged():
 
 @pytest.fixture
 def provider():
-    return factory.build_embedding_provider(make_settings(gemini_api_key=FAKE_GEMINI_KEY))
+    return factory.build_embedding_provider(make_settings(gemini_api_key=FAKE_GEMINI_KEY, **GEMINI_EMBEDDING))
 
 
 class FakeModels:

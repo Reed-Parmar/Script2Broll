@@ -5,8 +5,9 @@ def test_defaults_without_env():
     s = make_settings()
     assert s.gemini_api_key is None
     assert s.pixabay_api_key is None
-    assert s.embedding_provider == "gemini"
-    assert s.embedding_dim == 768
+    assert s.embedding_provider == "clip"
+    assert s.embedding_model == "ViT-B-32/laion2b_s34b_b79k"
+    assert s.embedding_dim == 512
 
 
 def test_env_vars_override(monkeypatch):

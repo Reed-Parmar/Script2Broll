@@ -22,15 +22,17 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+psycopg://script2broll:script2broll@localhost:5432/script2broll"
 
-    # Gemini (LLM + embeddings)
+    # Gemini (LLM; also an optional embedding provider)
     gemini_api_key: SecretStr | None = None
     gemini_llm_model: str = "gemini-2.5-flash"
 
     # Embeddings. The provider/model/dimension triple defines the vector space;
     # changing any of them means re-embedding the library.
-    embedding_provider: str = "gemini"
-    embedding_model: str = "gemini-embedding-2"
-    embedding_dim: int = 768
+    # clip: local OpenCLIP, EMBEDDING_MODEL = "<architecture>/<pretrained tag>".
+    # gemini: e.g. EMBEDDING_MODEL=gemini-embedding-2, EMBEDDING_DIM=768 (needs billing).
+    embedding_provider: str = "clip"
+    embedding_model: str = "ViT-B-32/laion2b_s34b_b79k"
+    embedding_dim: int = 512
 
     # Pixabay (backend only; never sent to the frontend)
     pixabay_api_key: SecretStr | None = None

@@ -32,6 +32,10 @@ def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
             settings.embedding_dim,
             settings.embedding_timeout_seconds,
         )
+    if settings.embedding_provider == "clip":
+        from app.providers.embedding.clip import ClipEmbeddingProvider
+
+        return ClipEmbeddingProvider(settings.embedding_model, settings.embedding_dim)
     raise ProviderNotConfigured(f"Unknown EMBEDDING_PROVIDER '{settings.embedding_provider}'")
 
 

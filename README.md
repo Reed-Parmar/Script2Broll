@@ -16,7 +16,7 @@ React (Vite) ──/api proxy──▶ FastAPI  POST /v1/search
                        SemanticSearchService            (services/retrieval.py)
                          │                 │
               EmbeddingProvider       VectorStore
-              (Gemini Embedding 2)    (PgVectorStore: PostgreSQL + pgvector, cosine/HNSW)
+              (local OpenCLIP)        (PgVectorStore: PostgreSQL + pgvector, cosine/HNSW)
 
 Ingestion (scripts/ingest.py -> services/ingestion.py):
   VideoSourceProvider (Pixabay) -> download to DATA_DIR -> ffprobe validate
@@ -25,16 +25,16 @@ Ingestion (scripts/ingest.py -> services/ingestion.py):
 
 The search service and ingestion depend only on the `EmbeddingProvider`, `VectorStore` and
 `VideoSourceProvider` interfaces; `providers/factory.py` is the only place concrete classes
-(Gemini, pgvector, Pixabay) are chosen.
+(CLIP or Gemini, pgvector, Pixabay) are chosen.
 
 | Topic | Phase 1 choice |
 |---|---|
-| Embedding model | `gemini-embedding-2` (multimodal: text and images share one vector space), 768 dims |
-| Query embedding | Query text prefixed `task: search result | query: ` (Embedding 2 takes task instructions in the text, not `task_type`) |
+| Embedding model | Local OpenCLIP `ViT-B-32/laion2b_s34b_b79k`, 512 dims (CPU; CUDA if available). Gemini Embedding 2 (768 dims) remains selectable via `EMBEDDING_PROVIDER=gemini` |
+| Query embedding | CLIP text encoder on the raw query; frames go through the CLIP image encoder (same space) |
 | Frame sampling | 8 frames per clip at the centres of 8 equal segments (deterministic; skips fade-in/out edges), max 512 px wide |
-| Frame embedding | One embedding per frame (each frame its own request item; max 6 images per request) |
+| Frame embedding | One embedding per frame (CLIP preprocessing: resize shortest side to 224, centre crop) |
 | Aggregation | Mean of the 8 L2-normalised frame vectors, re-normalised (`embedding_type = visual_mean`) |
-| Storage | `embeddings(entity_type='video', entity_id, embedding_type, model_name, vector(768), created_at)`, HNSW `vector_cosine_ops` index; unique per (video, type, model) |
+| Storage | `embeddings(entity_type='video', entity_id, embedding_type, model_name, vector(512), created_at)`, HNSW `vector_cosine_ops` index; unique per (video, type, model) |
 | Ranking | Cosine similarity only (`score = 1 - cosine distance`); no reranking |
 | Thumbnails | Middle sampled frame, saved to `DATA_DIR/thumbnails/{id}.jpg` |
 
@@ -51,7 +51,7 @@ backend/            FastAPI app (Python 3.12, uv)
     db/             SQLAlchemy engine/session, models (videos, embeddings)
     providers/      Replaceable external services
       llm/            LLMProvider          -> GeminiLLMProvider (unused in Phase 1)
-      embedding/      EmbeddingProvider    -> GeminiEmbeddingProvider
+      embedding/      EmbeddingProvider    -> ClipEmbeddingProvider (default), GeminiEmbeddingProvider
       video_source/   VideoSourceProvider  -> PixabayVideoProvider
       factory.py      config name -> concrete provider / vector store
     vectorstore/    VectorStore -> PgVectorStore
@@ -70,7 +70,7 @@ docker-compose.yml  PostgreSQL 17 + pgvector
 Requires Docker, Python 3.12 + uv, Node 20+, and FFmpeg (`ffmpeg`/`ffprobe` on PATH).
 
 ```bash
-cp .env.example .env            # then fill in GEMINI_API_KEY, PIXABAY_API_KEY
+cp .env.example .env            # then fill in PIXABAY_API_KEY (GEMINI_API_KEY is optional)
 
 docker compose up -d db
 
@@ -89,9 +89,10 @@ npm run dev                     # http://localhost:5173 (proxies /api -> :8000)
 | Variable | Default | Purpose |
 |---|---|---|
 | `DATABASE_URL` | local docker-compose DB | PostgreSQL + pgvector |
-| `GEMINI_API_KEY` | – | Gemini (backend only). Needs billing/credits for embeddings |
+| `POSTGRES_PORT` | `5432` | Host port docker-compose publishes the DB on (use e.g. `5433` if 5432 is taken) |
+| `GEMINI_API_KEY` | – | Gemini LLM (unused by search); embeddings only if `EMBEDDING_PROVIDER=gemini` (needs billing) |
 | `GEMINI_LLM_MODEL` | `gemini-2.5-flash` | LLM (not used by search) |
-| `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `gemini` / `gemini-embedding-2` / `768` | Embedding space. Changing any requires re-embedding; changing the dimension also requires recreating `embeddings` |
+| `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `clip` / `ViT-B-32/laion2b_s34b_b79k` / `512` | Embedding space (CLIP model is `<architecture>/<pretrained tag>`; weights download to the Hugging Face cache on first use). Changing any requires re-embedding; changing the dimension also requires recreating `embeddings` |
 | `PIXABAY_API_KEY` | – | Pixabay video search (backend only) |
 | `DATA_DIR` | `<repo>/data` | Downloaded clips and thumbnails (git-ignored) |
 | `FRAMES_PER_VIDEO` | `8` | Frames sampled per clip |
@@ -102,7 +103,11 @@ npm run dev                     # http://localhost:5173 (proxies /api -> :8000)
 ```bash
 cd backend
 uv run python -m scripts.ingest      # 14 distinct topics x 3 clips (~42 clips, ~330 MB)
+uv run python -m scripts.ingest --local [--limit 2]   # index clips already in data/videos, no downloads
 ```
+
+`--local` registers every `data/videos/<provider>_<id>.mp4` and indexes it without re-downloading;
+creator/tags are looked up from Pixabay by id when `PIXABAY_API_KEY` is set.
 
 - Pixabay is searched per topic; clips over 60 s are skipped; the ~720p rendition is downloaded.
 - Each clip is validated with ffprobe (corrupt files are marked `failed`), real duration/resolution
@@ -156,17 +161,17 @@ prints top results with scores, ingestion topic, tags and thumbnail paths for hu
 |------------------------|--------------------------------------------------|
 | `GET /health`          | API process is up                                |
 | `GET /health/database` | PostgreSQL reachable, pgvector installed, stored embedding dimension |
-| `GET /health/ai`       | Gemini key valid; LLM and embedding models exist |
+| `GET /health/ai`       | Configured embedding provider loads and embeds (CLIP) or key/model valid (Gemini); LLM state reported but not required |
 | `GET /health/pixabay`  | Pixabay key valid; video search responds         |
 
 They return `200 {"status":"ok"}` or `503` with `not_configured` / `error`. Responses never contain secrets.
-`/health/ai` only reads model metadata (free); it does not detect exhausted billing/credits.
+With Gemini embeddings, `/health/ai` only reads model metadata (free); it does not detect exhausted billing/credits.
 
 ## Tests
 
 ```bash
 cd backend
-uv run pytest                   # unit tests mock Gemini/Pixabay; integration tests use the real
+uv run pytest                   # unit tests mock CLIP/Gemini/Pixabay; integration tests use the real
                                 # DB and FFmpeg (skipped if unavailable) with a fake embedder
 ```
 

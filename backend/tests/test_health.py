@@ -4,8 +4,10 @@ import respx
 from sqlalchemy import create_engine
 
 from app.api import health
+from app.providers import factory
+from app.providers.errors import ProviderError
 from app.providers.video_source.pixabay import PIXABAY_VIDEOS_URL
-from tests.conftest import FAKE_PIXABAY_KEY, make_settings
+from tests.conftest import FAKE_PIXABAY_KEY, GEMINI_EMBEDDING, make_settings
 
 
 def test_liveness(client):
@@ -14,7 +16,37 @@ def test_liveness(client):
     assert response.json()["status"] == "ok"
 
 
-def test_ai_not_configured(client):
+class FakeEmbedder:
+    def __init__(self, error=None):
+        self.error = error
+
+    def check(self):
+        if self.error:
+            raise self.error
+        return {"model": "ViT-B-32/laion2b_s34b_b79k", "dim": 512, "device": "cpu"}
+
+
+def test_ai_reports_the_configured_embedding_provider(client, monkeypatch):
+    # Local CLIP needs no Gemini key; the unused LLM's state is reported without failing the check.
+    monkeypatch.setattr(factory, "build_embedding_provider", lambda _: FakeEmbedder())
+    response = client.get("/health/ai")
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "embedding": {"provider": "clip", "model": "ViT-B-32/laion2b_s34b_b79k", "dim": 512, "device": "cpu"},
+        "llm": {"status": "not_configured", "detail": "GEMINI_API_KEY is not set"},
+    }
+
+
+def test_ai_embedding_failure(client, monkeypatch):
+    monkeypatch.setattr(factory, "build_embedding_provider", lambda _: FakeEmbedder(ProviderError("Could not load CLIP model")))
+    response = client.get("/health/ai")
+    assert response.status_code == 503
+    assert response.json() == {"status": "error", "detail": "Could not load CLIP model"}
+
+
+@pytest.mark.parametrize("settings", [make_settings(**GEMINI_EMBEDDING)])
+def test_ai_gemini_embeddings_not_configured(client):
     response = client.get("/health/ai")
     assert response.status_code == 503
     assert response.json() == {"status": "not_configured", "detail": "GEMINI_API_KEY is not set"}

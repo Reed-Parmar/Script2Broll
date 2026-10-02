@@ -7,6 +7,9 @@ const backendUrl = process.env.VITE_BACKEND_URL ?? 'http://localhost:8000'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // Tailwind runs as a Vite plugin. An inline (empty) PostCSS config stops Vite from picking up
+  // a postcss.config.* from a parent directory outside the repo.
+  css: { postcss: {} },
   server: {
     proxy: {
       '/api': { target: backendUrl, rewrite: (path) => path.replace(/^\/api/, '') },

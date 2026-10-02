@@ -11,6 +11,7 @@ import respx
 from sqlalchemy import delete, func, select
 
 from app.api import search as search_api
+from app.config import get_settings
 from app.db.models import Embedding, Video
 from app.providers.embedding.base import EmbeddingProvider
 from app.providers.video_source.base import VideoCandidate, VideoSourceProvider
@@ -21,7 +22,7 @@ from tests.conftest import make_settings, make_test_video, requires_ffmpeg
 
 pytestmark = pytest.mark.integration
 
-DIM = 768
+DIM = get_settings().embedding_dim  # the dimension the real embeddings table was created with
 TEST_MODEL = "test-embedder"
 TEST_PROVIDER = "test"
 
@@ -61,6 +62,9 @@ class FakeSource(VideoSourceProvider):
 
     def search(self, query, per_page=20, page=1):
         return self.candidates
+
+    def get(self, source_id):
+        return next((c for c in self.candidates if c.source_id == source_id), None)
 
     def check(self):
         return {}
@@ -162,6 +166,28 @@ def test_ingestion_is_complete_and_idempotent(ingest, db_engine, settings):
     assert good.extra["embedding"] == {"model": TEST_MODEL, "dim": DIM, "frames": 8, "aggregation": "mean"}
     assert good.extra["queries"] == ["electric car", "ev charging"]
     assert thumbnail_path(settings.data_dir, good.id).is_file()
+
+
+@requires_ffmpeg
+def test_local_files_are_indexed_without_downloading(store, db_engine, settings):
+    videos_dir = settings.data_dir / "videos"
+    videos_dir.mkdir(parents=True)
+    make_test_video(videos_dir / f"{TEST_PROVIDER}_local1.mp4")
+    (videos_dir / "unnamed.mp4").write_bytes(b"skipped: not <provider>_<id>")
+    embedder = FakeEmbedder()
+
+    with respx.mock:  # no routes: any download attempt would fail the run
+        service = IngestionService(FakeSource([candidate("local1")]), embedder, store, db_engine, settings.data_dir, http=httpx.Client())
+        first = service.ingest_local()
+        second = service.ingest_local()
+
+    assert (first.found, first.new, first.embedded, first.failed) == (1, 1, 1, [])
+    assert (second.new, second.embedded, second.already_embedded) == (0, 0, 1)
+    assert embedder.image_calls == 1
+    with db_engine.connect() as conn:
+        [video] = conn.execute(select(Video).where(Video.source_provider == TEST_PROVIDER)).all()
+    assert (video.status, video.local_path, video.creator) == ("embedded", "videos/test_local1.mp4", "tester")
+    assert thumbnail_path(settings.data_dir, video.id).is_file()
 
 
 # --- search service + API -----------------------------------------------------------------

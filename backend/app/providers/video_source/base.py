@@ -25,6 +25,10 @@ class VideoSourceProvider(ABC):
     def search(self, query: str, per_page: int = 20, page: int = 1) -> list[VideoCandidate]:
         """Search the provider's catalogue."""
 
+    def get(self, source_id: str) -> VideoCandidate | None:
+        """Look up one clip by the provider's id. None if unknown, or if the provider can't."""
+        return None
+
     @abstractmethod
     def check(self) -> dict:
         """Cheap connectivity check. Returns non-secret details or raises ProviderError."""

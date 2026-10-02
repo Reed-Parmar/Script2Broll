@@ -5,6 +5,7 @@ and only clips without an embedding for the current model are (re)processed.
 """
 
 import logging
+import re
 import shutil
 import tempfile
 import time
@@ -29,6 +30,8 @@ ENTITY_VIDEO = "video"
 VISUAL_MEAN = "visual_mean"
 # Stock B-roll is short; skip long clips to keep downloads and embedding cost bounded.
 MAX_CLIP_SECONDS = 60
+# Downloads are stored as DATA_DIR/videos/<provider>_<source id>.mp4.
+LOCAL_FILE_NAME = re.compile(r"^(?P<provider>[a-z]+)_(?P<source_id>[A-Za-z0-9-]+)$")
 
 
 def thumbnail_path(data_dir: Path, video_id: int) -> Path:
@@ -50,7 +53,7 @@ class IngestReport:
 class IngestionService:
     def __init__(
         self,
-        source: VideoSourceProvider,
+        source: VideoSourceProvider | None,
         embedder: EmbeddingProvider,
         store: VectorStore,
         engine: Engine,
@@ -89,6 +92,46 @@ class IngestionService:
                 self._process(session, video, report)
         return report
 
+    def ingest_local(self, limit: int | None = None) -> IngestReport:
+        """Register and index clips already in DATA_DIR/videos, without downloading them again.
+
+        Attribution metadata (page URL, creator, tags) is looked up by id from the source
+        provider when one is configured; the video file itself is never re-fetched.
+        """
+        report = IngestReport()
+        files = sorted((self.data_dir / "videos").glob("*.mp4"))
+        with self._sessions() as session:
+            videos = []
+            for path in files:
+                if limit is not None and len(videos) >= limit:
+                    break
+                match = LOCAL_FILE_NAME.match(path.stem)
+                if match is None:
+                    log.warning("Skipping %s: name is not <provider>_<source id>.mp4", path.name)
+                    continue
+                video, created = self._register(session, self._local_candidate(match["provider"], match["source_id"]))
+                report.new += created
+                videos.append(video)
+            session.commit()
+            report.found = len(videos)
+            for video in videos:
+                self._process(session, video, report)
+        return report
+
+    def _local_candidate(self, provider: str, source_id: str) -> VideoCandidate:
+        if self.source is not None and self.source.name == provider:
+            try:
+                candidate = self.source.get(source_id)
+            except ProviderError as exc:
+                log.warning("No metadata for %s/%s: %s", provider, source_id, exc)
+            else:
+                if candidate is not None:
+                    return candidate
+        return VideoCandidate(
+            source_provider=provider, source_id=source_id, source_url="", video_url="",
+            thumbnail_url=None, duration=None, width=None, height=None,
+        )
+
     def embed_pending(self) -> IngestReport:
         """(Re)process registered clips that have no embedding for the current model."""
         report = IngestReport()
@@ -99,7 +142,7 @@ class IngestionService:
                 self._process(session, video, report)
         return report
 
-    def _register(self, session: Session, candidate: VideoCandidate, query: str) -> tuple[Video, bool]:
+    def _register(self, session: Session, candidate: VideoCandidate, query: str | None = None) -> tuple[Video, bool]:
         video = session.scalar(
             select(Video).where(
                 Video.source_provider == candidate.source_provider,
@@ -125,7 +168,7 @@ class IngestionService:
             session.add(video)
         # Remember which ingestion queries surfaced the clip (shown by the validation script).
         queries = list(video.extra.get("queries", []))
-        if query not in queries:
+        if query is not None and query not in queries:
             video.extra = {**video.extra, "queries": [*queries, query]}
         session.flush()
         return video, created

@@ -6,7 +6,7 @@ from google.genai import errors as genai_errors
 from app.providers import factory
 from app.providers.errors import ProviderError, ProviderNotConfigured
 from app.providers.video_source.pixabay import PIXABAY_VIDEOS_URL, PixabayVideoProvider
-from tests.conftest import FAKE_GEMINI_KEY, FAKE_PIXABAY_KEY, make_settings
+from tests.conftest import FAKE_GEMINI_KEY, FAKE_PIXABAY_KEY, GEMINI_EMBEDDING, make_settings
 
 PIXABAY_HIT = {
     "id": 125,
@@ -30,13 +30,18 @@ def test_providers_require_keys():
     with pytest.raises(ProviderNotConfigured):
         factory.build_llm_provider(s)
     with pytest.raises(ProviderNotConfigured):
-        factory.build_embedding_provider(s)
+        factory.build_embedding_provider(make_settings(**GEMINI_EMBEDDING))
     with pytest.raises(ProviderNotConfigured):
         factory.build_video_source(s)
 
 
+def test_clip_is_the_default_and_needs_no_key():
+    embedding = factory.build_embedding_provider(make_settings())
+    assert (embedding.name, embedding.model_name, embedding.dim) == ("clip", "ViT-B-32/laion2b_s34b_b79k", 512)
+
+
 def test_providers_initialise_with_keys():
-    s = make_settings(gemini_api_key=FAKE_GEMINI_KEY, pixabay_api_key=FAKE_PIXABAY_KEY)
+    s = make_settings(gemini_api_key=FAKE_GEMINI_KEY, pixabay_api_key=FAKE_PIXABAY_KEY, **GEMINI_EMBEDDING)
     assert factory.build_llm_provider(s).name == "gemini"
     embedding = factory.build_embedding_provider(s)
     assert (embedding.model_name, embedding.dim) == ("gemini-embedding-2", 768)
@@ -73,6 +78,20 @@ def test_pixabay_prefers_720p_rendition():
     respx.get(PIXABAY_VIDEOS_URL).mock(return_value=httpx.Response(200, json={"totalHits": 1, "hits": [hit]}))
     [clip] = PixabayVideoProvider(FAKE_PIXABAY_KEY).search("ev")
     assert clip.video_url == "https://cdn/small.mp4"
+
+
+@respx.mock
+def test_pixabay_get_by_id():
+    route = respx.get(PIXABAY_VIDEOS_URL).mock(return_value=httpx.Response(200, json={"totalHits": 1, "hits": [PIXABAY_HIT]}))
+    clip = PixabayVideoProvider(FAKE_PIXABAY_KEY).get("125")
+    assert route.calls.last.request.url.params["id"] == "125"
+    assert (clip.source_id, clip.creator, clip.source_url) == ("125", "jdoe", "https://pixabay.com/videos/id-125/")
+
+
+@respx.mock
+def test_pixabay_get_unknown_id():
+    respx.get(PIXABAY_VIDEOS_URL).mock(return_value=httpx.Response(200, json={"totalHits": 0, "hits": []}))
+    assert PixabayVideoProvider(FAKE_PIXABAY_KEY).get("1") is None
 
 
 def test_pixabay_hit_without_renditions_is_skipped():
@@ -119,7 +138,7 @@ def test_gemini_api_errors_are_wrapped(monkeypatch, code, expected):
 
 
 def test_gemini_check_success(monkeypatch):
-    provider = factory.build_embedding_provider(make_settings(gemini_api_key=FAKE_GEMINI_KEY))
+    provider = factory.build_embedding_provider(make_settings(gemini_api_key=FAKE_GEMINI_KEY, **GEMINI_EMBEDDING))
 
     class Info:
         display_name = "Gemini Embedding 2"

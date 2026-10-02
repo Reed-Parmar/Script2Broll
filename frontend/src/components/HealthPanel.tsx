@@ -4,7 +4,7 @@ import { getHealth, type HealthResult, type HealthStatus } from '../api/client'
 const CHECKS = [
   { label: 'Backend API', path: '/health' },
   { label: 'PostgreSQL + pgvector', path: '/health/database' },
-  { label: 'Gemini (LLM + embeddings)', path: '/health/ai' },
+  { label: 'Embedding model', path: '/health/ai' },
   { label: 'Pixabay', path: '/health/pixabay' },
 ]
 

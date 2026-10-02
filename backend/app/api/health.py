@@ -48,12 +48,23 @@ def health_database() -> JSONResponse:
     return _result(check)
 
 
+def _llm_status(settings: Settings) -> dict:
+    """The LLM is not used by Phase 1 search, so its state is reported without failing the check."""
+    try:
+        return {"status": "ok", **factory.build_llm_provider(settings).check()}
+    except ProviderNotConfigured as exc:
+        return {"status": "not_configured", "detail": str(exc)}
+    except ProviderError as exc:
+        return {"status": "error", "detail": str(exc)}
+
+
 @router.get("/ai")
 def health_ai(settings: Settings = Depends(get_settings)) -> JSONResponse:
+    """Status follows the configured embedding provider (which search depends on)."""
+
     def check() -> dict:
-        llm = factory.build_llm_provider(settings).check()
-        embedding = factory.build_embedding_provider(settings).check()
-        return {"llm": llm, "embedding": embedding}
+        embedding = {"provider": settings.embedding_provider, **factory.build_embedding_provider(settings).check()}
+        return {"embedding": embedding, "llm": _llm_status(settings)}
 
     return _result(check)
 

@@ -3,6 +3,7 @@
 import pytest
 from sqlalchemy import text
 
+from app.config import get_settings
 from app.db.models import Base
 from app.db.session import check_database
 
@@ -32,4 +33,4 @@ def test_health_database_ok(engine, client):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["pgvector_version"]
-    assert body["embedding_dim"] == 768
+    assert body["embedding_dim"] == get_settings().embedding_dim

@@ -8,7 +8,7 @@ from app.db.models import Video
 from app.db.session import get_session
 from app.providers.errors import ProviderError, ProviderNotConfigured
 from app.services.retrieval import SearchHit, SearchOutcome
-from tests.conftest import FAKE_GEMINI_KEY
+from tests.conftest import FAKE_GEMINI_KEY, GEMINI_EMBEDDING, make_settings
 
 
 class FakeService:
@@ -98,6 +98,7 @@ def test_embedding_provider_failure(client, use_service):
     assert response.json() == {"detail": "Gemini quota or rate limit exceeded (HTTP 429)"}
 
 
+@pytest.mark.parametrize("settings", [make_settings(**GEMINI_EMBEDDING)])
 def test_embedding_provider_not_configured(client):
     # No dependency override: the real factory runs with settings that have no Gemini key.
     client.app.dependency_overrides[get_session] = lambda: None

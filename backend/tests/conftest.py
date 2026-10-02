@@ -13,6 +13,9 @@ from app.main import create_app
 FAKE_GEMINI_KEY = "test-gemini-key-SHOULD-NOT-LEAK"
 FAKE_PIXABAY_KEY = "test-pixabay-key-SHOULD-NOT-LEAK"
 
+# The Gemini embedding space (no longer the default provider, which is local CLIP).
+GEMINI_EMBEDDING = {"embedding_provider": "gemini", "embedding_model": "gemini-embedding-2", "embedding_dim": 768}
+
 requires_ffmpeg = pytest.mark.skipif(
     not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="FFmpeg not on PATH"
 )

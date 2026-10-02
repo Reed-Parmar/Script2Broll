@@ -23,6 +23,10 @@ class PixabayVideoProvider(VideoSourceProvider):
         data = self._get({"q": query, "per_page": per_page, "page": page, "safesearch": "true"})
         return [c for c in (self._to_candidate(hit) for hit in data.get("hits", [])) if c]
 
+    def get(self, source_id: str) -> VideoCandidate | None:
+        hits = self._get({"id": source_id}).get("hits") or []
+        return self._to_candidate(hits[0]) if hits else None
+
     def check(self) -> dict:
         data = self._get({"q": "nature", "per_page": 3})
         return {"total_hits": data.get("totalHits", 0)}
