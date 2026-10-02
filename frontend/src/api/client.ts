@@ -88,3 +88,46 @@ export async function searchVideos(
     throw new SearchError('The video database is unavailable. Check that PostgreSQL is running.')
   throw new SearchError(detail ? `Search failed: ${detail}` : `Search failed (HTTP ${response.status}).`)
 }
+
+export interface Beat {
+  beat_id: string
+  order: number
+  text: string
+  status: 'ok' | 'error'
+  /** Why this beat has no analysis/results; other beats are unaffected. */
+  error: string | null
+  editorial_intent: string | null
+  topic: string | null
+  visual_role: string | null
+  visual_description: string | null
+  retrieval_query: string | null
+  broll_results: SearchResult[]
+}
+
+export interface ScriptResponse {
+  script: string
+  model: string
+  top_k: number
+  beats: Beat[]
+  timings_ms: Record<string, number>
+}
+
+export async function analyzeScript(script: string, topK: number, signal?: AbortSignal): Promise<ScriptResponse> {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE}/v1/script/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ script, top_k: topK }),
+      signal,
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    throw new SearchError('Could not reach the backend. Is it running?')
+  }
+  if (response.ok) return (await response.json()) as ScriptResponse
+  const body = await response.json().catch(() => null)
+  const detail = typeof body?.detail === 'string' ? body.detail : null
+  if (response.status === 422) throw new SearchError(detail ?? 'Please enter a script (up to 5000 characters).')
+  throw new SearchError(detail ? `Script analysis failed: ${detail}` : `Script analysis failed (HTTP ${response.status}).`)
+}

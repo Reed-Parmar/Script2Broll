@@ -129,8 +129,8 @@ def build_prompt(text: str) -> str:
     return PROMPT.format(intents=intents, text=text.replace(">>>", ">"))
 
 
-def parse_analysis(raw: str) -> EditorialAnalysis:
-    """Parse and validate the model's JSON. Raises EditorialAnalysisError instead of passing bad output on."""
+def load_json_object(raw: str, error: type[ProviderError]) -> dict:
+    """Decode an LLM reply that should be one JSON object; raise `error` (client-safe) otherwise."""
     text = raw.strip()
     fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)  # some models wrap JSON in fences
     if fenced:
@@ -139,9 +139,15 @@ def parse_analysis(raw: str) -> EditorialAnalysis:
         data = json.loads(text)
     except ValueError:
         log.warning("LLM returned malformed JSON: %.200r", raw)
-        raise EditorialAnalysisError("The language model returned malformed JSON") from None
+        raise error("The language model returned malformed JSON") from None
     if not isinstance(data, dict):
-        raise EditorialAnalysisError("The language model returned JSON that is not an object")
+        raise error("The language model returned JSON that is not an object")
+    return data
+
+
+def parse_analysis(raw: str) -> EditorialAnalysis:
+    """Parse and validate the model's JSON. Raises EditorialAnalysisError instead of passing bad output on."""
+    data = load_json_object(raw, EditorialAnalysisError)
     try:
         return EditorialAnalysis.model_validate(data)
     except ValidationError as exc:
