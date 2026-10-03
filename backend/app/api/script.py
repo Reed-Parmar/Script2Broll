@@ -245,7 +245,7 @@ def vibe_vocabulary() -> dict[str, list[str]]:
     return vocabulary()
 
 
-AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg"}
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".webm"}  # .webm: browser microphone recordings
 
 
 class TranscriptOut(BaseModel):

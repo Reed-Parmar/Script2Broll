@@ -104,6 +104,47 @@ export default function ScriptToBeatView({
   onAudioUpload,
 }: ScriptToBeatViewProps) {
   const audioInputRef = useRef<HTMLInputElement>(null)
+  // Live microphone recording -> same transcription + analysis flow as an uploaded audio file.
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordSeconds, setRecordSeconds] = useState(0)
+  const [micError, setMicError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!isRecording) return
+    const timer = setInterval(() => setRecordSeconds((s) => s + 1), 1000)
+    return () => clearInterval(timer)
+  }, [isRecording])
+
+  async function toggleRecording() {
+    if (isRecording) {
+      recorderRef.current?.stop()
+      return
+    }
+    setMicError(null)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const recorder = new MediaRecorder(stream)
+      const chunks: Blob[] = []
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data)
+      }
+      recorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop())
+        setIsRecording(false)
+        const type = recorder.mimeType || 'audio/webm'
+        const ext = type.includes('ogg') ? 'ogg' : type.includes('mp4') ? 'm4a' : 'webm'
+        const blob = new Blob(chunks, { type })
+        if (blob.size > 0 && onAudioUpload) onAudioUpload(new File([blob], `recording.${ext}`, { type }))
+      }
+      recorderRef.current = recorder
+      setRecordSeconds(0)
+      recorder.start()
+      setIsRecording(true)
+    } catch {
+      setMicError('Microphone not available (permission denied or no input device).')
+    }
+  }
   const [isPlaying, setIsPlaying] = useState(false)
   const [playbackMode, setPlaybackMode] = useState<'clip' | 'sequence'>('clip')
   const [showClipPickerForBeatId, setShowClipPickerForBeatId] = useState<string | null>(null)
@@ -263,6 +304,19 @@ export default function ScriptToBeatView({
                   <Mic className="w-3 h-3" />
                   <span>Audio</span>
                 </button>
+                <button
+                  onClick={() => void toggleRecording()}
+                  disabled={isAnalyzing && !isRecording}
+                  title="Record narration from your microphone; it is transcribed and analysed when you stop"
+                  className={`px-2.5 py-1 text-[11px] rounded-md border flex items-center gap-1 transition-colors disabled:opacity-40 ${
+                    isRecording
+                      ? 'bg-red-600/15 border-red-500 text-red-500'
+                      : 'bg-[var(--bg-card)] hover:bg-[var(--bg-hover)] border-[var(--border-subtle)] text-[var(--text-secondary)]'
+                  }`}
+                >
+                  <Mic className="w-3 h-3" />
+                  <span>{isRecording ? `Stop ● ${formatTime(recordSeconds)}` : 'Record'}</span>
+                </button>
                 <input
                   ref={audioInputRef}
                   type="file"
@@ -307,6 +361,11 @@ export default function ScriptToBeatView({
               <span>{isAnalyzing ? 'Analyzing Narrative Structure…' : 'Analyze & Generate Beats'}</span>
             </button>
           </div>
+          {micError && (
+            <p role="alert" className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-md px-3 py-2">
+              {micError}
+            </p>
+          )}
           {analyzeError && (
             <p role="alert" className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-md px-3 py-2">
               {analyzeError}
