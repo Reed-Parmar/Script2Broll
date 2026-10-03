@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react'
 import Navbar, { type NavTab } from './components/navigation/Navbar'
 import ScriptToBeatView from './components/views/ScriptToBeatView'
 import SemanticSearchView from './components/views/SemanticSearchView'
-import EditorialSearchView from './components/views/EditorialSearchView'
 import CinematicIntro from './components/intro/CinematicIntro'
 import HealthModal from './components/modals/HealthModal'
 import { SAMPLE_SCRIPTS } from './data/libraryData'
@@ -188,8 +187,6 @@ export default function App() {
         )}
 
         {activeTab === 'semantic_search' && <SemanticSearchView />}
-
-        {activeTab === 'editorial_search' && <EditorialSearchView />}
       </main>
 
       {/* Service Diagnostics Modal */}

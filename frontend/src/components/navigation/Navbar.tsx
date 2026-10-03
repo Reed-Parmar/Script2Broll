@@ -1,7 +1,7 @@
-import { Film, FileText, Search, Sparkles, Sun, Moon, Server, Play } from 'lucide-react'
+import { Film, FileText, Search, Sun, Moon, Server, Play } from 'lucide-react'
 import type { HealthResult } from '../../api/client'
 
-export type NavTab = 'script_to_beat' | 'semantic_search' | 'editorial_search'
+export type NavTab = 'script_to_beat' | 'semantic_search'
 
 interface NavbarProps {
   activeTab: NavTab
@@ -27,7 +27,7 @@ export default function Navbar({
   const isError = healthSummary?.status === 'error' || healthSummary?.status === 'unreachable'
 
   return (
-    <header className="h-14 border-b border-[var(--border-subtle)] bg-[var(--bg-surface)] px-4 sm:px-6 flex items-center justify-between select-none shadow-xs transition-colors duration-200">
+    <header className="relative h-14 border-b border-[var(--border-subtle)] bg-[var(--bg-surface)] px-4 sm:px-6 flex items-center justify-between select-none shadow-xs transition-colors duration-200">
       {/* Brand Identity */}
       <div className="flex items-center gap-3">
         <button
@@ -49,8 +49,8 @@ export default function Navbar({
         </button>
       </div>
 
-      {/* Main Navigation Tabs */}
-      <nav className="flex items-center bg-[var(--bg-card)] border border-[var(--border-subtle)] rounded-lg p-1 text-xs font-medium">
+      {/* Main Navigation Tabs - Centered */}
+      <nav className="sm:absolute sm:left-1/2 sm:-translate-x-1/2 flex items-center bg-[var(--bg-card)] border border-[var(--border-subtle)] rounded-lg p-1 text-xs font-medium shadow-xs">
         <button
           onClick={() => onTabChange('script_to_beat')}
           className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md transition-all ${
@@ -73,18 +73,6 @@ export default function Navbar({
         >
           <Search className="w-3.5 h-3.5" />
           <span>Semantic Search</span>
-        </button>
-
-        <button
-          onClick={() => onTabChange('editorial_search')}
-          className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md transition-all ${
-            activeTab === 'editorial_search'
-              ? 'bg-[var(--bg-surface)] text-blue-500 shadow-xs font-semibold'
-              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-          }`}
-        >
-          <Sparkles className="w-3.5 h-3.5" />
-          <span>Editorial Search</span>
         </button>
       </nav>
 
