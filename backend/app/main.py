@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api import editorial, health, remote, script, search
+from app.api import editorial, export, health, remote, script, search
 from app.config import get_settings
 from app.providers.errors import ProviderError, ProviderNotConfigured
 
@@ -59,6 +59,7 @@ def create_app() -> FastAPI:
     app.include_router(editorial.router)
     app.include_router(script.router)
     app.include_router(remote.router)
+    app.include_router(export.router)
     return app
 
 

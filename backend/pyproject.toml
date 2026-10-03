@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Script2Broll backend: semantic B-roll retrieval API"
 requires-python = ">=3.12"
 dependencies = [
+    "edge-tts>=7.2.8",
     "fastapi>=0.142.2",
     "faster-whisper>=1.2.1",
     "google-genai>=2.28.0",

@@ -78,6 +78,14 @@ def build_transcription_provider(settings: Settings):
     raise ProviderNotConfigured(f"Transcription is not configured (TRANSCRIPTION_PROVIDER='{settings.transcription_provider}')")
 
 
+def build_tts_provider(settings: Settings):
+    if settings.tts_provider == "edge":
+        from app.providers.tts.edge import EdgeTTSProvider
+
+        return EdgeTTSProvider()
+    raise ProviderNotConfigured(f"Text-to-speech is not configured (TTS_PROVIDER='{settings.tts_provider}')")
+
+
 def build_vector_store() -> VectorStore:
     from app.db.session import get_engine
     from app.vectorstore.pgvector import PgVectorStore

@@ -13,10 +13,11 @@ import {
   Layers,
   ArrowRight,
   Mic,
+  Download,
 } from 'lucide-react'
 import type { ScriptBeat, BrollClip } from '../../types/editor'
 import { SAMPLE_SCRIPTS } from '../../data/libraryData'
-import { mediaUrl } from '../../api/client'
+import { clipDownloadUrl, getVoices, mediaUrl, renderVideo, saveBlob, SearchError, type VoiceOption } from '../../api/client'
 
 /** Stable label: local DB id when present, otherwise the backend's asset key (cloud clips). */
 function clipLabel(clip: BrollClip): string {
@@ -109,6 +110,21 @@ export default function ScriptToBeatView({
   const [isRecording, setIsRecording] = useState(false)
   const [recordSeconds, setRecordSeconds] = useState(0)
   const [micError, setMicError] = useState<string | null>(null)
+  // Demo export: optional TTS narration (default deep male narrator) + full video / single-clip download.
+  const [voices, setVoices] = useState<VoiceOption[]>([])
+  const [voice, setVoice] = useState<string>('deep_male_narrator')
+  const [withNarration, setWithNarration] = useState(true)
+  const [isExporting, setIsExporting] = useState(false)
+  const [exportMessage, setExportMessage] = useState<string | null>(null)
+
+  useEffect(() => {
+    getVoices()
+      .then((res) => {
+        setVoices(res.voices)
+        setVoice(res.default)
+      })
+      .catch(() => setVoices([]))
+  }, [])
 
   useEffect(() => {
     if (!isRecording) return
@@ -220,6 +236,33 @@ export default function ScriptToBeatView({
     setSegElapsed(video.currentTime)
     // Display time from backend pacing is used up: move on even if the source clip is longer.
     if (video.currentTime >= activeSeg.duration) advance()
+  }
+
+  async function exportVideo() {
+    // Same plan the preview player uses: per beat, its paced clips with their display seconds.
+    const renderBeats = beats
+      .map((b) => ({
+        text: b.narration,
+        clips: plan
+          .filter((seg) => seg.beatId === b.id && seg.clip.asset_key)
+          .map((seg) => ({ asset_key: seg.clip.asset_key as string, seconds: Math.round(seg.duration * 100) / 100 })),
+      }))
+      .filter((b) => b.clips.length > 0)
+    if (renderBeats.length === 0) {
+      setExportMessage('Nothing to export yet — analyse the script first.')
+      return
+    }
+    setIsExporting(true)
+    setExportMessage(withNarration ? 'Generating narration and rendering video…' : 'Rendering video…')
+    try {
+      const blob = await renderVideo(renderBeats, withNarration, withNarration ? voice : null)
+      saveBlob(blob, 'script2broll_video.mp4')
+      setExportMessage(`Video downloaded (${(blob.size / 1_000_000).toFixed(1)} MB).`)
+    } catch (error) {
+      setExportMessage(error instanceof SearchError ? error.message : 'Export failed.')
+    } finally {
+      setIsExporting(false)
+    }
   }
 
   function rewind() {
@@ -555,7 +598,18 @@ export default function ScriptToBeatView({
                 </div>
               </div>
 
-              <div className="text-[11px] text-[var(--text-muted)]">
+              <div className="text-[11px] text-[var(--text-muted)] flex items-center gap-3">
+                {sequenceClip?.asset_key && (
+                  <a
+                    href={clipDownloadUrl(sequenceClip.asset_key)}
+                    download
+                    className="flex items-center gap-1 text-blue-500 hover:text-blue-600"
+                    title="Download this B-roll clip"
+                  >
+                    <Download className="w-3 h-3" />
+                    <span>Download clip</span>
+                  </a>
+                )}
                 {sequenceActiveBeat ? (
                   <span className="font-medium text-[var(--text-primary)]">
                     Beat {sequenceActiveBeat.beat_number} &bull; {sequenceClip ? `${clipLabel(sequenceClip)} (${sourceBadge(sequenceClip)})` : 'No clip'}
@@ -626,6 +680,41 @@ export default function ScriptToBeatView({
             </div>
           </div>
 
+          {/* Demo export: narration + full video download */}
+          {beats.length > 0 && (
+            <div className="bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-xl p-3.5 text-xs flex flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-[11px] font-semibold text-[var(--text-secondary)] uppercase tracking-wider">Export</span>
+                <label className="flex items-center gap-1.5 text-[var(--text-secondary)]">
+                  <input type="checkbox" checked={withNarration} onChange={(e) => setWithNarration(e.target.checked)} />
+                  <span>AI narration (text-to-speech)</span>
+                </label>
+                <select
+                  value={voice}
+                  onChange={(e) => setVoice(e.target.value)}
+                  disabled={!withNarration || voices.length === 0}
+                  className="bg-[var(--bg-card)] border border-[var(--border-subtle)] rounded-md px-2 py-1 text-[11px] text-[var(--text-primary)] disabled:opacity-40"
+                >
+                  {voices.length === 0 && <option value={voice}>Deep male narrator</option>}
+                  {voices.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => void exportVideo()}
+                  disabled={isExporting || isAnalyzing}
+                  className="ml-auto px-3 py-1.5 text-[11px] font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-lg flex items-center gap-1.5"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>{isExporting ? 'Rendering…' : 'Download full video'}</span>
+                </button>
+              </div>
+              {exportMessage && <p className="text-[11px] text-[var(--text-muted)]">{exportMessage}</p>}
+            </div>
+          )}
+
           {/* AI Editorial Reasoning Card */}
           {selectedBeat && (
             <div className="bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-xl p-4 text-xs space-y-2">
@@ -665,6 +754,24 @@ export default function ScriptToBeatView({
                       .join(' → ')}
                     {` = ${(selectedBeat.visual_seconds ?? 0).toFixed(1)}s of ${selectedBeat.target_duration.toFixed(1)}s narration`}
                   </span>
+                </div>
+              )}
+              {(selectedBeat.paced_clips?.length ?? 0) > 0 && (
+                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                  <span className="text-[var(--text-muted)] font-medium">Download B-roll:</span>
+                  {selectedBeat.paced_clips!
+                    .filter((c) => c.asset_key)
+                    .map((c) => (
+                      <a
+                        key={c.asset_key}
+                        href={clipDownloadUrl(c.asset_key as string)}
+                        download
+                        className="flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--border-subtle)] text-blue-500 hover:bg-[var(--bg-hover)]"
+                      >
+                        <Download className="w-3 h-3" />
+                        {clipLabel(c)}
+                      </a>
+                    ))}
                 </div>
               )}
               {[...(selectedBeat.warnings ?? []), ...(selectedBeat.pacing_warnings ?? [])].map((w) => (

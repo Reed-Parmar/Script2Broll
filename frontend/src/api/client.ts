@@ -349,3 +349,55 @@ export async function transcribeAudio(file: File, signal?: AbortSignal): Promise
   const detail = typeof payload?.detail === 'string' ? payload.detail : null
   throw new SearchError(detail ? `Transcription failed: ${detail}` : `Transcription failed (HTTP ${response.status}).`)
 }
+
+// ---------------------------------------------------------------------------------------------
+// Demo export: TTS narration voices, full-video render, single-clip download (backend api/export.py)
+
+export interface VoiceOption {
+  id: string
+  label: string
+}
+
+export async function getVoices(): Promise<{ default: string; voices: VoiceOption[] }> {
+  const response = await fetch(`${API_BASE}/v1/export/voices`)
+  if (!response.ok) throw new SearchError(`Could not load narration voices (HTTP ${response.status}).`)
+  return (await response.json()) as { default: string; voices: VoiceOption[] }
+}
+
+export interface RenderBeat {
+  text: string
+  clips: { asset_key: string; seconds: number }[]
+}
+
+/** Render the beats (+ optional narration) to an MP4 and return it as a Blob. */
+export async function renderVideo(beats: RenderBeat[], narration: boolean, voice: string | null): Promise<Blob> {
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE}/v1/export/video`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ beats, narration, voice }),
+    })
+  } catch {
+    throw new SearchError('Could not reach the backend. Is it running?')
+  }
+  if (response.ok) return await response.blob()
+  const payload = await response.json().catch(() => null)
+  const detail = typeof payload?.detail === 'string' ? payload.detail : null
+  throw new SearchError(detail ? `Export failed: ${detail}` : `Export failed (HTTP ${response.status}).`)
+}
+
+/** Backend download URL for one B-roll clip (local file or cloud clip fetched by the backend). */
+export const clipDownloadUrl = (assetKey: string): string => `${API_BASE}/v1/export/clip/${encodeURIComponent(assetKey)}`
+
+/** Save a Blob as a file in the browser. */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+}

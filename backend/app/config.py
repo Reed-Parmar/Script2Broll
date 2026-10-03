@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     whisper_model: str = "base"
     max_audio_mb: int = 25
 
+    # Demo narration (text-to-speech) for video export: edge (online neural voices, no key) | none
+    tts_provider: str = "edge"
+
     # Phase 8: pacing
     pacing_words_per_minute: float = 150.0
     pacing_min_shot_seconds: float = 1.5
