@@ -109,7 +109,7 @@ def test_editorial_search_searches_the_retrieval_query(client, use_llm, use_serv
     assert body["editorial"]["editorial_intent"] == "problem"
     assert body["editorial"]["retrieval_query"] == EV_QUERY
     assert [r["video_id"] for r in body["results"]] == [3]
-    assert set(body["timings_ms"]) == {"analysis", "embedding", "search", "total"}
+    assert {"analysis", "search", "total"} <= set(body["timings_ms"])  # multi-query reports one search timing
 
 
 def test_semantic_search_is_the_default_and_never_calls_the_llm(client, use_service, monkeypatch):

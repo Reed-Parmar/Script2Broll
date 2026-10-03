@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     data_dir: Path = REPO_ROOT / "data"
     frames_per_video: int = 8
 
+    # Semantic search quality (see services/retrieval.py): caption-template ensembling and hubness
+    # correction (subtracts each clip's average similarity to generic descriptions; 0 disables).
+    search_prompt_ensemble: bool = True
+    search_hubness_alpha: float = 0.75
+
     # Ollama context window (prompt truncation guard)
     ollama_num_ctx: int = 8192
 
@@ -61,8 +66,16 @@ class Settings(BaseSettings):
     cloud_timeout_seconds: float = 5.0
     provider_cache_ttl_hours: float = 24.0
 
-    # Phase 7: vibe tag suggestions (one extra LLM call per beat)
+    # Phase 7: vibe tag suggestions (returned by the same LLM call as the editorial analysis)
     vibe_suggest: bool = True
+    # Beats processed concurrently in /v1/script/analyze (LLM calls still queue at the LLM server;
+    # retrieval for one beat overlaps the next beat's LLM call). 1 = sequential.
+    script_beat_concurrency: int = 3
+
+    # Audio upload: speech-to-text for Script -> Beat (faster_whisper = local/offline; none = disabled)
+    transcription_provider: str = "faster_whisper"
+    whisper_model: str = "base"
+    max_audio_mb: int = 25
 
     # Phase 8: pacing
     pacing_words_per_minute: float = 150.0

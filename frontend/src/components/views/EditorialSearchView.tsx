@@ -1,30 +1,48 @@
 import { useState, useEffect, useRef } from 'react'
 import { Sparkles, SlidersHorizontal, Play, Clock, CheckCircle2, RefreshCw } from 'lucide-react'
-import { searchVideos, mediaUrl, type SearchResult } from '../../api/client'
+import {
+  getEditorialIntents,
+  getVibeVocabulary,
+  mediaUrl,
+  searchVideos,
+  SearchError,
+  type EditorialIntentResult,
+  type IntentOption,
+  type SearchResult,
+} from '../../api/client'
+
+// Option values: '' = let the model decide / no mood; intents are backend enum values;
+// moods are "<category>:<tag>" from the backend vibe vocabulary.
+const AUTO = ''
+
+function moodToVibe(mood: string): Record<string, string[]> | null {
+  const [category, tag] = mood.split(':')
+  return category && tag ? { [category]: [tag] } : null
+}
 
 const SAMPLE_EDITORIAL_PROMPTS = [
   {
     sentence: 'However, charging infrastructure remains critically limited, creating anxiety for everyday drivers.',
-    intent: 'Problem / Bottleneck',
-    tone: 'Urgent & Congested',
+    intent: 'problem',
+    tone: 'mood:tense',
     query: 'charging plug electric car charging station traffic',
   },
   {
     sentence: 'Artificial intelligence models analyze millions of diagnostic scans to pinpoint anomalies.',
-    intent: 'Solution / High-Tech',
-    tone: 'Clinical & High-Tech',
+    intent: 'explanation',
+    tone: 'visual_style:documentary',
     query: 'doctor x-ray hospital technology diagnosis medicine',
   },
   {
     sentence: 'Global capital markets shift in milliseconds as high-frequency algorithms execute trades.',
-    intent: 'Escalation / Tension',
-    tone: 'Fast-Paced & Analytical',
+    intent: 'process',
+    tone: 'energy:energetic',
     query: 'stock market financial exchange graph profits analysis',
   },
   {
     sentence: 'Across pristine alpine valleys, clean renewable wind energy powers regional transit.',
-    intent: 'Resolution / Hope',
-    tone: 'Cinematic & Expansive',
+    intent: 'conclusion',
+    tone: 'atmosphere:natural',
     query: 'mountain snow nature landscape clouds travel',
   },
 ]
@@ -36,6 +54,18 @@ export default function EditorialSearchView() {
   const [results, setResults] = useState<SearchResult[]>([])
   const [isSearching, setIsSearching] = useState(false)
   const [activePreview, setActivePreview] = useState<SearchResult | null>(null)
+  const [analysis, setAnalysis] = useState<EditorialIntentResult | null>(null)
+  const [appliedInfo, setAppliedInfo] = useState<{ intentSource: string | null; vibe: Record<string, string[]> | null }>({ intentSource: null, vibe: null })
+  const [searchError, setSearchError] = useState<string | null>(null)
+  const [hasSearched, setHasSearched] = useState(false)
+  const [intentOptions, setIntentOptions] = useState<IntentOption[]>([])
+  const [vibeVocabulary, setVibeVocabulary] = useState<Record<string, string[]>>({})
+
+  // Step 2/3 options come from the backend so the UI never invents its own vocabulary.
+  useEffect(() => {
+    getEditorialIntents().then(setIntentOptions).catch(() => setIntentOptions([]))
+    getVibeVocabulary().then(setVibeVocabulary).catch(() => setVibeVocabulary({}))
+  }, [])
   const videoRefs = useRef<Record<number, HTMLVideoElement | null>>({})
 
   useEffect(() => {
@@ -43,23 +73,26 @@ export default function EditorialSearchView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Step 2 (intent) steers the backend's editorial analysis; Step 3 (mood) re-orders the retrieved
+  // clips with the backend's vibe scoring. Empty values let the backend decide / apply no mood.
   async function executeEditorialSearch(stmt: string, intent: string, tone: string) {
     setIsSearching(true)
-    // Construct rich editorial retrieval query
-    let queryTerms = stmt
-    if (intent.includes('Problem')) queryTerms += ' problem struggle traffic delay'
-    if (intent.includes('Solution')) queryTerms += ' solution tech modern smart'
-    if (tone.includes('High-Tech')) queryTerms += ' technology computer electronics'
-    if (tone.includes('Congested')) queryTerms += ' city traffic cars crowded'
-    if (tone.includes('Cinematic')) queryTerms += ' nature landscape open'
-
+    setSearchError(null)
     try {
-      const resp = await searchVideos(queryTerms, 12)
+      const resp = await searchVideos(stmt, 12, 'editorial', undefined, {
+        intent: intent || null,
+        vibe: moodToVibe(tone),
+      })
       setResults(resp.results)
-    } catch {
-      // Handled in searchVideos
+      setAnalysis(resp.editorial)
+      setAppliedInfo({ intentSource: resp.intent_source ?? null, vibe: resp.vibe ?? null })
+    } catch (error) {
+      setResults([])
+      setAnalysis(null)
+      setSearchError(error instanceof SearchError ? error.message : 'Editorial search failed.')
     } finally {
       setIsSearching(false)
+      setHasSearched(true)
     }
   }
 
@@ -113,11 +146,12 @@ export default function EditorialSearchView() {
               onChange={(e) => setEditorialIntent(e.target.value)}
               className="w-full bg-[var(--bg-card)] border border-[var(--border-subtle)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-xs sm:text-sm focus:border-blue-500 focus:outline-none"
             >
-              <option value="Problem / Bottleneck">Problem / Conflict / Bottleneck</option>
-              <option value="Hook / Introduction">Hook / Context / Atmosphere</option>
-              <option value="Solution / High-Tech">Solution / Breakthrough / Tech</option>
-              <option value="Escalation / Tension">Escalation / Momentum / Action</option>
-              <option value="Resolution / Hope">Resolution / Harmony / Conclusion</option>
+              <option value={AUTO}>Auto — let the model decide</option>
+              {intentOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.value.replace('_', ' ')} — {opt.description}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -130,11 +164,16 @@ export default function EditorialSearchView() {
               onChange={(e) => setVisualTone(e.target.value)}
               className="w-full bg-[var(--bg-card)] border border-[var(--border-subtle)] text-[var(--text-primary)] rounded-lg px-3 py-2 text-xs sm:text-sm focus:border-blue-500 focus:outline-none"
             >
-              <option value="Urgent & Congested">Urgent & Congested</option>
-              <option value="Clinical & High-Tech">Clinical & Clean High-Tech</option>
-              <option value="Cinematic & Expansive">Cinematic & Expansive Landscape</option>
-              <option value="Fast-Paced & Analytical">Fast-Paced & Analytical Momentum</option>
-              <option value="Human & Collaborative">Human, Warm & Collaborative</option>
+              <option value={AUTO}>No mood preference</option>
+              {Object.entries(vibeVocabulary).map(([category, tags]) => (
+                <optgroup key={category} label={category.replace('_', ' ')}>
+                  {tags.map((tag) => (
+                    <option key={`${category}:${tag}`} value={`${category}:${tag}`}>
+                      {tag}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
             </select>
           </div>
         </div>
@@ -179,7 +218,17 @@ export default function EditorialSearchView() {
         <div className="flex items-center gap-2">
           <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
           <span className="text-[var(--text-secondary)]">
-            Synthesized Visual Directive: <strong className="text-[var(--text-primary)] font-medium">&ldquo;{visualTone}&rdquo;</strong> supporting dramatic role <strong className="text-[var(--text-primary)] font-medium">&ldquo;{editorialIntent}&rdquo;</strong>.
+            {analysis ? (
+              <>
+                Backend analysis: intent <strong className="text-[var(--text-primary)] font-medium">&ldquo;{analysis.editorial_intent}&rdquo;</strong>
+                {appliedInfo.intentSource === 'user' ? ' (your choice)' : ' (model)'},
+                {appliedInfo.vibe ? ` mood ${Object.entries(appliedInfo.vibe).map(([c, t]) => `${c}: ${t.join(', ')}`).join('; ')},` : ''}
+                shot <strong className="text-[var(--text-primary)] font-medium">&ldquo;{analysis.visual_description}&rdquo;</strong> &mdash; searched{' '}
+                <code className="font-mono text-[10px]">{analysis.retrieval_query}</code>
+              </>
+            ) : (
+              <>Run a search to see how the backend interprets this sentence.</>
+            )}
           </span>
         </div>
         <span className="text-[11px] font-mono text-[var(--text-muted)] shrink-0 hidden sm:inline">
@@ -187,6 +236,14 @@ export default function EditorialSearchView() {
         </span>
       </div>
 
+      {searchError && (
+        <p role="alert" className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-md px-3 py-2">
+          {searchError}
+        </p>
+      )}
+      {!searchError && !isSearching && hasSearched && results.length === 0 && (
+        <p className="text-xs text-[var(--text-muted)] px-1">No clips matched this query in the indexed library.</p>
+      )}
       {/* Results Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
         {results.map((result, i) => (

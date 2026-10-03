@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from app.providers.errors import ProviderError
 from app.providers.llm.base import LLMProvider
+from app.services.vibe_tags import VibeTags, vibe_json_schema, vocabulary_prompt
 
 log = logging.getLogger(__name__)
 
@@ -94,6 +95,8 @@ class EditorialIntentResult(EditorialAnalysis):
     original_text: str
     retrieval_query: str  # primary query, from visual_description
     alternative_queries: list[str] = []  # from filmable_visuals, deduplicated, at most 3
+    # Vibe tags suggested in the same LLM call (script pipeline only); internal, not serialised.
+    suggested_vibe: VibeTags | None = Field(default=None, exclude=True)
 
 
 # Given to the LLM's structured-output mode. Kept flat (no $refs) so every provider accepts it.
@@ -108,6 +111,19 @@ LLM_RESPONSE_SCHEMA = {
     },
     "required": ["topic", "editorial_intent", "visual_role", "visual_description", "filmable_visuals"],
 }
+
+# Same schema plus the vibe tags (controlled vocabulary), so the script pipeline gets intent, shots and
+# feel from ONE call per beat instead of two sequential calls.
+LLM_RESPONSE_SCHEMA_WITH_VIBE = {
+    **LLM_RESPONSE_SCHEMA,
+    "properties": {**LLM_RESPONSE_SCHEMA["properties"], "vibe": vibe_json_schema()},
+    "required": [*LLM_RESPONSE_SCHEMA["required"], "vibe"],
+}
+
+VIBE_FIELD = """- vibe: how the footage should FEEL, as an object with these keys. Use tags ONLY from these lists
+  (0 to 2 per key; leave a list empty if nothing fits):
+{vocabulary}
+"""
 
 # The examples and the "most specific intent" rule matter: without them small models answer
 # "context" for almost everything.
@@ -180,11 +196,25 @@ def _quote(text: str) -> str:
     return text.replace(">>>", ">").replace("<<<", "<")
 
 
-def build_prompt(text: str, previous: str | None = None) -> str:
-    """`previous` is included only if `text` contains a reference word (see needs_context)."""
-    intents = "\n".join(f"  {intent.value}: {meaning}" for intent, meaning in INTENT_GUIDE.items())
+INTENT_OVERRIDE = """
+The editor has already decided this line's editorial_intent: "{intent}" ({meaning}). Use exactly that
+intent, and choose the visual role and shots that serve it.
+"""
+
+
+def build_prompt(text: str, previous: str | None = None, intent: EditorialIntent | None = None,
+                 suggest_vibe: bool = False) -> str:
+    """`previous` is included only if `text` contains a reference word (see needs_context).
+    `intent`, if given, is the editor's choice and replaces the model's own classification."""
+    intents = "\n".join(f"  {i.value}: {meaning}" for i, meaning in INTENT_GUIDE.items())
     context = CONTEXT_BLOCK.format(previous=_quote(previous)) if previous and needs_context(text) else ""
-    return PROMPT.format(intents=intents, context=context, text=_quote(text))
+    if intent is not None:
+        context += INTENT_OVERRIDE.format(intent=intent.value, meaning=INTENT_GUIDE[intent])
+    prompt = PROMPT.format(intents=intents, context=context, text=_quote(text))
+    if suggest_vibe:  # add the vibe field to the list of JSON fields, right before the narration block
+        marker = "\nThe narration, and any surrounding narration"
+        prompt = prompt.replace(marker, "\n" + VIBE_FIELD.format(vocabulary=vocabulary_prompt()) + marker, 1)
+    return prompt
 
 
 def load_json_object(raw: str, error: type[ProviderError]) -> dict:
@@ -264,14 +294,28 @@ class EditorialIntentAnalyzer:
     def __init__(self, llm: LLMProvider):
         self.llm = llm
 
-    def analyze(self, text: str, previous: str | None = None) -> EditorialIntentResult:
-        """Analyse `text`. The previous line, if given, is used only to resolve references in `text`."""
-        raw = self.llm.generate(build_prompt(text, previous), json_schema=LLM_RESPONSE_SCHEMA)
+    def analyze(self, text: str, previous: str | None = None, intent: EditorialIntent | None = None,
+                suggest_vibe: bool = False) -> EditorialIntentResult:
+        """Analyse `text`. The previous line, if given, is used only to resolve references in `text`.
+        An editor-chosen `intent` steers the shots and is kept as the result's intent.
+        `suggest_vibe` also asks for vibe tags in the same call (validated; never fails the analysis)."""
+        schema = LLM_RESPONSE_SCHEMA_WITH_VIBE if suggest_vibe else LLM_RESPONSE_SCHEMA
+        raw = self.llm.generate(build_prompt(text, previous, intent, suggest_vibe), json_schema=schema)
         analysis = parse_analysis(raw)
+        suggested_vibe = None
+        if suggest_vibe:
+            try:  # unknown tags are dropped by VibeTags; a malformed block just means "no suggestion"
+                vibe_data = load_json_object(raw, EditorialAnalysisError).get("vibe")
+                suggested_vibe = VibeTags.model_validate(vibe_data if isinstance(vibe_data, dict) else {})
+            except (ValueError, ProviderError):
+                suggested_vibe = None
+        if intent is not None:
+            analysis = analysis.model_copy(update={"editorial_intent": intent})
         primary = build_retrieval_query(analysis)
         return EditorialIntentResult(
             original_text=text,
             retrieval_query=primary,
             alternative_queries=build_alternative_queries(analysis, primary),
+            suggested_vibe=suggested_vibe,
             **analysis.model_dump(),
         )

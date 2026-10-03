@@ -2,7 +2,10 @@
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+import tempfile
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -196,7 +199,8 @@ def get_script_service(
     }
     retrieval = BrollRetrievalService(search, clouds, settings.cloud_max_requests_per_script)
     vibe = VibeAnalyzer(llm) if settings.vibe_suggest else None
-    return ScriptAnalysisService(ScriptSegmenter(llm), EditorialIntentAnalyzer(llm), search, retrieval, vibe)
+    return ScriptAnalysisService(ScriptSegmenter(llm), EditorialIntentAnalyzer(llm), search, retrieval, vibe,
+                                 concurrency=settings.script_beat_concurrency)
 
 
 @router.post("/analyze")
@@ -239,3 +243,34 @@ def analyze_script(
 def vibe_vocabulary() -> dict[str, list[str]]:
     """Allowed vibe tags per category (controlled vocabulary)."""
     return vocabulary()
+
+
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg"}
+
+
+class TranscriptOut(BaseModel):
+    text: str
+    language: str | None
+    duration: float | None
+    model: str
+
+
+@router.post("/transcribe", tags=["audio"])
+def transcribe_audio(file: UploadFile = File(...), settings: Settings = Depends(get_settings)) -> TranscriptOut:
+    """Audio narration -> text. The client then sends the text to POST /v1/script/analyze (same pipeline)."""
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in AUDIO_EXTENSIONS:
+        raise HTTPException(422, f"Unsupported audio type '{suffix or '?'}'; use {', '.join(sorted(AUDIO_EXTENSIONS))}")
+    provider = factory.build_transcription_provider(settings)
+    data = file.file.read(settings.max_audio_mb * 1024 * 1024 + 1)
+    if len(data) > settings.max_audio_mb * 1024 * 1024:
+        raise HTTPException(413, f"Audio file is larger than {settings.max_audio_mb} MB")
+    if not data:
+        raise HTTPException(422, "The audio file is empty")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / f"upload{suffix}"
+        path.write_bytes(data)
+        transcript = provider.transcribe(path)
+    if not transcript.text:
+        raise HTTPException(422, "No speech was recognised in the audio")
+    return TranscriptOut(text=transcript.text, language=transcript.language, duration=transcript.duration, model=provider.model)

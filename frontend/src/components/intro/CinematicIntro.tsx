@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Film, Sparkles, Layers, Cpu, Database } from 'lucide-react'
-import { LOCAL_LIBRARY_CLIPS } from '../../data/libraryData'
-import { mediaUrl } from '../../api/client'
+import { mediaUrl, searchVideos, type SearchResult } from '../../api/client'
 
 interface CinematicIntroProps {
   onComplete: () => void
@@ -13,21 +12,21 @@ export default function CinematicIntro({ onComplete }: CinematicIntroProps) {
   const [timecodeFrame, setTimecodeFrame] = useState(0)
   const [activeStepIndex, setActiveStepIndex] = useState(0)
 
-  // Curated showcase clips from our 42 library videos to show in the intro's visual reel rack
-  const previewClips = [
-    LOCAL_LIBRARY_CLIPS[26], // #27: EV charging
-    LOCAL_LIBRARY_CLIPS[16], // #17: Seoul traffic
-    LOCAL_LIBRARY_CLIPS[12], // #13: Charging plug
-    LOCAL_LIBRARY_CLIPS[29], // #30: Solar energy
-    LOCAL_LIBRARY_CLIPS[7],  // #8: AI circuit
-    LOCAL_LIBRARY_CLIPS[18], // #19: Strategy meeting
-  ]
+  // Showcase reels come from the real indexed library (one semantic search); empty if the backend is down.
+  const [previewClips, setPreviewClips] = useState<SearchResult[]>([])
+  useEffect(() => {
+    const controller = new AbortController()
+    searchVideos('city technology people', 6, 'semantic', controller.signal)
+      .then((response) => setPreviewClips(response.results.slice(0, 6)))
+      .catch(() => setPreviewClips([]))
+    return () => controller.abort()
+  }, [])
 
   const workflowSteps = [
     { title: 'SCRIPT INGESTION', desc: 'Parsing narrative semantics and dialogue pacing' },
     { title: 'EDITORIAL DECOMPOSITION', desc: 'Segmenting narrative beats by dramatic intent' },
     { title: 'VISUAL INTENT SYNTHESIS', desc: 'Formulating cinematic search directions' },
-    { title: 'B-ROLL RETRIEVAL', desc: 'Matching against 42 high-definition stock reels' },
+    { title: 'B-ROLL RETRIEVAL', desc: 'Matching against the indexed stock library' },
     { title: 'TIMELINE SEQUENCING', desc: 'Calibrating multi-track editorial timeline' },
   ]
 
@@ -309,7 +308,7 @@ export default function CinematicIntro({ onComplete }: CinematicIntroProps) {
           <div className="flex items-center justify-between pb-3 border-b border-white/10 mb-3">
             <span className="text-[11px] font-mono font-bold tracking-wider text-emerald-400 uppercase flex items-center gap-1.5">
               <Film className="w-3.5 h-3.5" />
-              <span>Library Footage Assets ({LOCAL_LIBRARY_CLIPS.length})</span>
+              <span>Library Footage Assets ({previewClips.length})</span>
             </span>
             <span className="text-[10px] font-mono text-emerald-400">READY</span>
           </div>

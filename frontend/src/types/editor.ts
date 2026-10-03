@@ -1,15 +1,9 @@
-export type EditorialIntent =
-  | 'intro'
-  | 'context'
-  | 'problem'
-  | 'escalation'
-  | 'climax'
-  | 'effect'
-  | 'solution'
-  | 'conclusion'
+/** Editorial intent values come from the backend (`EditorialIntent` enum in services/editorial.py). */
+export type EditorialIntent = string
 
 export interface BrollClip {
-  video_id: number
+  /** Local DB id (machine-specific); null for cloud clips. Use `asset_key` as the stable id. */
+  video_id: number | null
   source: string
   source_id: string
   source_url: string
@@ -21,6 +15,18 @@ export interface BrollClip {
   video_url: string
   thumbnail_url: string
   score?: number
+  // --- from /v1/script/analyze candidates (Phase 5+) ---
+  asset_key?: string
+  source_type?: 'local' | 'cloud'
+  provider?: string
+  page_url?: string
+  score_basis?: string
+  provider_rank?: number | null
+  matched_query?: string
+  vibe_score?: number | null
+  /** Pacing for this clip in its beat (seconds on screen) and its status. */
+  display_seconds?: number
+  pacing_status?: 'ok' | 'clip_shorter' | 'unknown_duration'
 }
 
 export interface ScriptBeat {
@@ -33,7 +39,30 @@ export interface ScriptBeat {
   retrieval_query: string
   assigned_clip: BrollClip | null
   target_duration: number
-  status: 'pending' | 'analyzed' | 'assigned'
+  status: 'pending' | 'analyzed' | 'assigned' | 'error'
+  // --- from /v1/script/analyze (optional so older sample data still type-checks) ---
+  backend_beat_id?: string
+  topic?: string | null
+  error?: string | null
+  warnings?: string[]
+  alternative_queries?: string[]
+  filmable_visuals?: string[]
+  /** All B-roll candidates for this beat (local + cloud), in backend order. */
+  candidates?: BrollClip[]
+  /** Clips chosen by backend pacing, each with display_seconds. */
+  paced_clips?: BrollClip[]
+  visual_seconds?: number
+  pacing_warnings?: string[]
+  source_status?: Record<string, { status: string; count: number; detail: string | null }>
+  vibe?: BeatVibe | null
+}
+
+export type VibeTags = Record<string, string[]>
+
+export interface BeatVibe {
+  suggested: VibeTags | null
+  selected: VibeTags
+  source: 'user' | 'suggested' | 'none'
 }
 
 export interface Project {

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, type ChangeEvent } from 'react'
+import { useState, useRef, useEffect, useMemo, type ChangeEvent } from 'react'
 import {
   FileText,
   Sparkles,
@@ -12,10 +12,66 @@ import {
   Film,
   Layers,
   ArrowRight,
+  Mic,
 } from 'lucide-react'
 import type { ScriptBeat, BrollClip } from '../../types/editor'
-import { SAMPLE_SCRIPTS, LOCAL_LIBRARY_CLIPS } from '../../data/libraryData'
+import { SAMPLE_SCRIPTS } from '../../data/libraryData'
 import { mediaUrl } from '../../api/client'
+
+/** Stable label: local DB id when present, otherwise the backend's asset key (cloud clips). */
+function clipLabel(clip: BrollClip): string {
+  return clip.video_id != null ? `#${clip.video_id}` : (clip.asset_key ?? clip.source_id)
+}
+
+/** One clip shown for `duration` seconds, starting `start` seconds into the whole sequence. */
+interface Segment {
+  beatId: string
+  clip: BrollClip
+  start: number
+  duration: number
+}
+
+/**
+ * The single source of truth for timing: the backend's pacing (`paced_clips[].display_seconds`).
+ * A clip the user picked replaces the first paced slot and inherits that slot's duration.
+ * Without backend pacing (no paced clips) the assigned clip is shown for its own length.
+ */
+function beatSegments(beat: ScriptBeat): Omit<Segment, 'start'>[] {
+  const paced = (beat.paced_clips ?? []).filter((c) => (c.display_seconds ?? 0) > 0)
+  if (paced.length > 0) {
+    const assigned = beat.assigned_clip
+    const userPicked = assigned && !paced.some((c) => c.asset_key && c.asset_key === assigned.asset_key)
+    return paced.map((c, i) => ({
+      beatId: beat.id,
+      clip: i === 0 && userPicked ? assigned : c,
+      duration: c.display_seconds ?? 0,
+    }))
+  }
+  const clip = beat.assigned_clip
+  const fallback = clip?.duration && clip.duration > 0 ? clip.duration : 0
+  return clip && fallback > 0 ? [{ beatId: beat.id, clip, duration: fallback }] : []
+}
+
+function buildPlan(beats: ScriptBeat[]): Segment[] {
+  const plan: Segment[] = []
+  let start = 0
+  for (const beat of beats) {
+    for (const seg of beatSegments(beat)) {
+      plan.push({ ...seg, start })
+      start += seg.duration
+    }
+  }
+  return plan
+}
+
+/** On-screen seconds for a beat = sum of its planned segments (same numbers the player uses). */
+function beatSeconds(beat: ScriptBeat): number {
+  return beatSegments(beat).reduce((acc, seg) => acc + seg.duration, 0)
+}
+
+function sourceBadge(clip: BrollClip): string {
+  return clip.source_type === 'cloud' ? `Cloud · ${clip.source}` : 'Local'
+}
 
 interface ScriptToBeatViewProps {
   scriptText: string
@@ -27,6 +83,10 @@ interface ScriptToBeatViewProps {
   onAssignClipToBeat: (beatId: string, clip: BrollClip) => void
   isAnalyzing: boolean
   onLoadSample: (sampleId: string) => void
+  analyzeError?: string | null
+  analyzeNote?: string | null
+  /** Audio narration upload (.mp3/.wav/.m4a/.ogg): transcribed by the backend, then analysed. */
+  onAudioUpload?: (file: File) => void
 }
 
 export default function ScriptToBeatView({
@@ -39,44 +99,92 @@ export default function ScriptToBeatView({
   onAssignClipToBeat,
   isAnalyzing,
   onLoadSample,
+  analyzeError = null,
+  analyzeNote = null,
+  onAudioUpload,
 }: ScriptToBeatViewProps) {
+  const audioInputRef = useRef<HTMLInputElement>(null)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [currentTime, setCurrentTime] = useState(0)
   const [playbackMode, setPlaybackMode] = useState<'clip' | 'sequence'>('clip')
   const [showClipPickerForBeatId, setShowClipPickerForBeatId] = useState<string | null>(null)
+  // Index into the active playlist and seconds elapsed within that segment.
+  const [segIndex, setSegIndex] = useState(0)
+  const [segElapsed, setSegElapsed] = useState(0)
   const videoRef = useRef<HTMLVideoElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const selectedBeat = beats.find((b) => b.id === selectedBeatId) || beats[0] || null
-  const activeClip = selectedBeat?.assigned_clip ?? null
 
   const wordCount = scriptText.trim() ? scriptText.trim().split(/\s+/).length : 0
   const estimatedSeconds = Math.round(wordCount / 2.3)
-  const totalDuration = beats.reduce((acc, b) => acc + (b.assigned_clip?.duration || b.target_duration), 0)
+  const plan = useMemo(() => buildPlan(beats), [beats])
+  const totalDuration = plan.reduce((acc, seg) => acc + seg.duration, 0)
+  const pickerBeat = beats.find((b) => b.id === showClipPickerForBeatId) ?? null
+  const pickerClips = pickerBeat?.candidates ?? []
 
-  // Handle Play/Pause
+  // Single-beat mode plays only the selected beat's segments; sequence mode plays everything.
+  // In sequence mode the playlist must not depend on the selection (playback itself moves the selection).
+  const playlistBeatId = playbackMode === 'sequence' ? null : (selectedBeat?.id ?? null)
+  const playlist = useMemo(
+    () => (playlistBeatId === null ? plan : plan.filter((seg) => seg.beatId === playlistBeatId)),
+    [plan, playlistBeatId],
+  )
+  const activeSeg: Segment | null = playlist[Math.min(segIndex, playlist.length - 1)] ?? null
+  const playlistStart = playlist[0]?.start ?? 0
+  const playlistDuration = playlist.reduce((acc, seg) => acc + seg.duration, 0)
+  const currentTime = activeSeg ? activeSeg.start - playlistStart + Math.min(segElapsed, activeSeg.duration) : 0
+
+  const sequenceActiveBeat = activeSeg ? (beats.find((b) => b.id === activeSeg.beatId) ?? selectedBeat) : selectedBeat
+  const sequenceClip = activeSeg?.clip ?? selectedBeat?.assigned_clip ?? null
+
+  // Restart from the first segment whenever the playlist itself changes (new analysis, mode, beat).
   useEffect(() => {
-    if (isPlaying) {
-      videoRef.current?.play().catch(() => {})
-    } else {
-      videoRef.current?.pause()
-    }
-  }, [isPlaying, activeClip?.video_id])
+    setSegIndex(0)
+    setSegElapsed(0)
+  }, [playlist])
 
-  // Sequence playback mode calculation
-  let sequenceActiveBeat = selectedBeat
-  let sequenceClip = activeClip
-  if (playbackMode === 'sequence') {
-    let acc = 0
-    for (const b of beats) {
-      const dur = b.assigned_clip?.duration || b.target_duration
-      if (currentTime >= acc && currentTime < acc + dur) {
-        sequenceActiveBeat = b
-        sequenceClip = b.assigned_clip
-        break
+  // Keep the left-hand beat list in sync with what is on screen during sequence playback.
+  useEffect(() => {
+    if (playbackMode === 'sequence' && activeSeg && activeSeg.beatId !== selectedBeatId) onSelectBeat(activeSeg.beatId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSeg?.beatId, playbackMode])
+
+  // Play/pause follows state; a new segment starts from the clip's beginning (no in-point search).
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+    if (isPlaying) video.play().catch(() => setIsPlaying(false))
+    else video.pause()
+  }, [isPlaying, segIndex, sequenceClip?.video_url])
+
+  function advance() {
+    if (segIndex + 1 < playlist.length) {
+      // Same source clip in consecutive segments: the src does not change, so rewind it explicitly.
+      if (videoRef.current && playlist[segIndex + 1].clip.video_url === activeSeg?.clip.video_url) {
+        videoRef.current.currentTime = 0
       }
-      acc += dur
+      setSegIndex(segIndex + 1)
+      setSegElapsed(0)
+    } else {
+      setIsPlaying(false)
+      setSegIndex(0)
+      setSegElapsed(0)
+      if (videoRef.current) videoRef.current.currentTime = 0
     }
+  }
+
+  function handleTimeUpdate() {
+    const video = videoRef.current
+    if (!video || !activeSeg) return
+    setSegElapsed(video.currentTime)
+    // Display time from backend pacing is used up: move on even if the source clip is longer.
+    if (video.currentTime >= activeSeg.duration) advance()
+  }
+
+  function rewind() {
+    setSegIndex(0)
+    setSegElapsed(0)
+    if (videoRef.current) videoRef.current.currentTime = 0
   }
 
   function handleFileUpload(e: ChangeEvent<HTMLInputElement>) {
@@ -143,6 +251,31 @@ export default function ScriptToBeatView({
               className="hidden"
               onChange={handleFileUpload}
             />
+
+            {onAudioUpload && (
+              <>
+                <button
+                  onClick={() => audioInputRef.current?.click()}
+                  disabled={isAnalyzing}
+                  title="Upload narration audio (.mp3, .wav, .m4a, .ogg); it is transcribed and analysed"
+                  className="px-2.5 py-1 text-[11px] rounded-md bg-[var(--bg-card)] hover:bg-[var(--bg-hover)] border border-[var(--border-subtle)] text-[var(--text-secondary)] flex items-center gap-1 transition-colors disabled:opacity-40"
+                >
+                  <Mic className="w-3 h-3" />
+                  <span>Audio</span>
+                </button>
+                <input
+                  ref={audioInputRef}
+                  type="file"
+                  accept=".mp3,.wav,.m4a,.ogg,audio/mpeg,audio/wav,audio/mp4,audio/ogg"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (file) onAudioUpload(file)
+                    e.target.value = ''
+                  }}
+                />
+              </>
+            )}
           </div>
         </div>
 
@@ -174,6 +307,16 @@ export default function ScriptToBeatView({
               <span>{isAnalyzing ? 'Analyzing Narrative Structure…' : 'Analyze & Generate Beats'}</span>
             </button>
           </div>
+          {analyzeError && (
+            <p role="alert" className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-md px-3 py-2">
+              {analyzeError}
+            </p>
+          )}
+          {analyzeNote && (
+            <p role="status" className="text-xs text-amber-500 bg-amber-500/10 border border-amber-500/30 rounded-md px-3 py-2">
+              {analyzeNote}
+            </p>
+          )}
         </div>
       </section>
 
@@ -198,7 +341,11 @@ export default function ScriptToBeatView({
                   key={beat.id}
                   onClick={() => {
                     onSelectBeat(beat.id)
-                    setCurrentTime(0)
+                    if (playbackMode === 'sequence') {
+                      const idx = plan.findIndex((seg) => seg.beatId === beat.id)
+                      setSegIndex(Math.max(idx, 0))
+                      setSegElapsed(0)
+                    }
                   }}
                   className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
                     isSelected
@@ -219,7 +366,7 @@ export default function ScriptToBeatView({
 
                     <div className="flex items-center gap-1 text-[11px] text-[var(--text-muted)] font-mono">
                       <Clock className="w-3 h-3" />
-                      <span>{beat.target_duration.toFixed(1)}s</span>
+                      <span>{beatSeconds(beat).toFixed(1)}s</span>
                     </div>
                   </div>
 
@@ -240,17 +387,17 @@ export default function ScriptToBeatView({
                         <div className="truncate text-[11px] text-[var(--text-secondary)]">
                           <span className="font-semibold text-emerald-500 flex items-center gap-1">
                             <CheckCircle2 className="w-3 h-3 inline" />
-                            #{beat.assigned_clip!.video_id}
+                            {clipLabel(beat.assigned_clip!)}
                           </span>
                           <span className="text-[10px] text-[var(--text-muted)] truncate block">
-                            {beat.assigned_clip!.creator || 'Stock B-roll'}
+                            {sourceBadge(beat.assigned_clip!)} · {beat.assigned_clip!.creator || 'Stock B-roll'}
                           </span>
                         </div>
                       </div>
                     ) : (
                       <div className="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">
                         <Video className="w-3.5 h-3.5" />
-                        <span>No footage assigned</span>
+                        <span>{beat.status === 'error' ? `Beat failed: ${beat.error ?? 'unknown error'}` : 'No footage found'}</span>
                       </div>
                     )}
 
@@ -293,20 +440,24 @@ export default function ScriptToBeatView({
           {/* Main Video Viewport Canvas */}
           <div className="bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-xl overflow-hidden shadow-xs flex flex-col">
             <div className="relative aspect-video w-full bg-black flex items-center justify-center overflow-hidden">
-              {sequenceClip ? (
+              {sequenceClip?.video_url ? (
                 <video
                   ref={videoRef}
                   src={mediaUrl(sequenceClip.video_url)}
                   poster={mediaUrl(sequenceClip.thumbnail_url)}
                   playsInline
                   onClick={() => setIsPlaying(!isPlaying)}
-                  onEnded={() => setIsPlaying(false)}
+                  onTimeUpdate={handleTimeUpdate}
+                  onEnded={advance}
+                  muted
                   className="w-full h-full object-contain cursor-pointer"
                 />
               ) : (
                 <div className="flex flex-col items-center justify-center p-6 text-center text-[var(--text-muted)]">
                   <Film className="w-10 h-10 mb-2 opacity-50" />
-                  <p className="text-xs">No video assigned to this beat</p>
+                  <p className="text-xs">
+                    {sequenceClip ? 'This clip has no playable video URL (provider does not allow playback)' : 'No video assigned to this beat'}
+                  </p>
                 </div>
               )}
 
@@ -331,10 +482,7 @@ export default function ScriptToBeatView({
                 </button>
 
                 <button
-                  onClick={() => {
-                    setCurrentTime(0)
-                    if (videoRef.current) videoRef.current.currentTime = 0
-                  }}
+                  onClick={rewind}
                   title="Rewind to start"
                   className="p-1.5 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
                 >
@@ -344,14 +492,14 @@ export default function ScriptToBeatView({
                 <div className="text-[11px] font-mono text-[var(--text-secondary)]">
                   <span>{formatTime(currentTime)}</span>
                   <span className="text-[var(--text-muted)] mx-1">/</span>
-                  <span>{formatTime(sequenceClip?.duration || 10)}</span>
+                  <span>{formatTime(playlistDuration)}</span>
                 </div>
               </div>
 
               <div className="text-[11px] text-[var(--text-muted)]">
                 {sequenceActiveBeat ? (
                   <span className="font-medium text-[var(--text-primary)]">
-                    Beat {sequenceActiveBeat.beat_number} &bull; {sequenceClip ? `#${sequenceClip.video_id}` : 'No clip'}
+                    Beat {sequenceActiveBeat.beat_number} &bull; {sequenceClip ? `${clipLabel(sequenceClip)} (${sourceBadge(sequenceClip)})` : 'No clip'}
                   </span>
                 ) : null}
               </div>
@@ -377,7 +525,11 @@ export default function ScriptToBeatView({
                     <button
                       onClick={() => {
                         onSelectBeat(beat.id)
-                        setCurrentTime(0)
+                        if (playbackMode === 'sequence') {
+                          const idx = plan.findIndex((seg) => seg.beatId === beat.id)
+                          setSegIndex(Math.max(idx, 0))
+                          setSegElapsed(0)
+                        }
                       }}
                       className={`relative w-28 h-16 rounded-lg overflow-hidden border text-left flex flex-col justify-between p-1.5 transition-all ${
                         isSelected
@@ -402,7 +554,7 @@ export default function ScriptToBeatView({
                       </div>
 
                       <div className="relative z-10 bg-black/75 px-1 py-0.5 rounded text-[8px] font-mono text-slate-300 self-end">
-                        {beat.target_duration.toFixed(1)}s
+                        {beatSeconds(beat).toFixed(1)}s
                       </div>
                     </button>
 
@@ -434,6 +586,31 @@ export default function ScriptToBeatView({
                   </span>
                 </div>
               </div>
+              {selectedBeat.vibe && selectedBeat.vibe.source !== 'none' && (
+                <div className="text-[11px]">
+                  <span className="text-[var(--text-muted)] font-medium">Vibe ({selectedBeat.vibe.source}): </span>
+                  <span className="text-[var(--text-primary)]">
+                    {Object.entries(selectedBeat.vibe.selected)
+                      .filter(([, tags]) => tags.length)
+                      .map(([category, tags]) => `${category}: ${tags.join(', ')}`)
+                      .join(' · ')}
+                  </span>
+                </div>
+              )}
+              {(selectedBeat.paced_clips?.length ?? 0) > 0 && (
+                <div className="text-[11px]">
+                  <span className="text-[var(--text-muted)] font-medium">Pacing: </span>
+                  <span className="text-[var(--text-primary)] font-mono">
+                    {selectedBeat.paced_clips!
+                      .map((c) => `${clipLabel(c)} ${(c.display_seconds ?? 0).toFixed(1)}s${c.pacing_status && c.pacing_status !== 'ok' ? ` (${c.pacing_status})` : ''}`)
+                      .join(' → ')}
+                    {` = ${(selectedBeat.visual_seconds ?? 0).toFixed(1)}s of ${selectedBeat.target_duration.toFixed(1)}s narration`}
+                  </span>
+                </div>
+              )}
+              {[...(selectedBeat.warnings ?? []), ...(selectedBeat.pacing_warnings ?? [])].map((w) => (
+                <p key={w} className="text-[11px] text-amber-500">{w}</p>
+              ))}
             </div>
           )}
         </div>
@@ -449,7 +626,7 @@ export default function ScriptToBeatView({
                   Select Footage for Beat
                 </h3>
                 <p className="text-xs text-[var(--text-muted)]">
-                  Choose from the 42 local high-definition library clips
+                  {pickerClips.length} candidates for this beat (local library and cloud), ranked by the backend
                 </p>
               </div>
               <button
@@ -461,9 +638,12 @@ export default function ScriptToBeatView({
             </div>
 
             <div className="flex-1 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 gap-3 p-1">
-              {LOCAL_LIBRARY_CLIPS.slice(0, 18).map((clip) => (
+              {pickerClips.length === 0 && (
+                <p className="text-xs text-[var(--text-muted)] col-span-full">No candidates — analyse the script first.</p>
+              )}
+              {pickerClips.map((clip) => (
                 <div
-                  key={clip.video_id}
+                  key={clip.asset_key ?? clip.video_id ?? clip.source_id}
                   onClick={() => {
                     onAssignClipToBeat(showClipPickerForBeatId, clip)
                     setShowClipPickerForBeatId(null)
@@ -482,10 +662,11 @@ export default function ScriptToBeatView({
                   </div>
                   <div className="p-2 text-[10px]">
                     <span className="font-bold text-[var(--text-primary)] block">
-                      Clip #{clip.video_id}
+                      {clipLabel(clip)} · {sourceBadge(clip)}
                     </span>
                     <span className="text-[var(--text-muted)] truncate block">
                       {clip.tags[0] || 'B-roll'}
+                      {clip.display_seconds != null ? ` · ${clip.display_seconds.toFixed(1)}s on screen` : ''}
                     </span>
                   </div>
                 </div>

@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.config import Settings, get_settings
 from app.providers import factory
-from app.services.editorial import EditorialIntentAnalyzer, EditorialIntentResult
+from app.services.editorial import INTENT_GUIDE, EditorialIntentAnalyzer, EditorialIntentResult
 
 router = APIRouter(prefix="/v1/editorial", tags=["editorial"])
 
@@ -39,3 +39,9 @@ def analyze(
     analyzer: EditorialIntentAnalyzer = Depends(get_editorial_analyzer),
 ) -> EditorialIntentResult:
     return analyzer.analyze(request.text)
+
+
+@router.get("/intents")
+def intents() -> list[dict[str, str]]:
+    """Allowed editorial intents (backend enum) with one-line meanings, for intent selectors."""
+    return [{"value": intent.value, "description": meaning} for intent, meaning in INTENT_GUIDE.items()]

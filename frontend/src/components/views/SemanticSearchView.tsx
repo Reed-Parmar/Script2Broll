@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react'
 import { Search, Sparkles, RefreshCw, Play, Clock, User, ExternalLink, Zap } from 'lucide-react'
-import { searchVideos, mediaUrl, type SearchResult } from '../../api/client'
+import { searchVideos, mediaUrl, SearchError, type SearchResult } from '../../api/client'
 
 const EXAMPLE_QUERIES = [
   'people charging an electric vehicle',
@@ -22,6 +22,10 @@ export default function SemanticSearchView() {
   const [searchTimings, setSearchTimings] = useState<Record<string, number>>({})
   const [searchModel, setSearchModel] = useState<string>('')
   const [activePreviewVideo, setActivePreviewVideo] = useState<SearchResult | null>(null)
+  const [searchError, setSearchError] = useState<string | null>(null)
+  const [hasSearched, setHasSearched] = useState(false)
+  // The query that produced the shown results (the input box may have been edited since).
+  const [searchedQuery, setSearchedQuery] = useState('')
   const videoRefs = useRef<Record<number, HTMLVideoElement | null>>({})
 
   useEffect(() => {
@@ -34,15 +38,19 @@ export default function SemanticSearchView() {
     if (!trimmed) return
 
     setIsSearching(true)
+    setSearchError(null)
     try {
-      const response = await searchVideos(trimmed, 18)
+      const response = await searchVideos(trimmed, 18, 'semantic')
       setResults(response.results)
-      setSearchTimings(response.timings_ms)
+      setSearchTimings(response.timings_ms ?? {})
       setSearchModel(response.model)
-    } catch {
-      // Fallback is handled automatically in searchVideos
+      setSearchedQuery(response.query)
+    } catch (error) {
+      setResults([])
+      setSearchError(error instanceof SearchError ? error.message : 'Search failed.')
     } finally {
       setIsSearching(false)
+      setHasSearched(true)
     }
   }
 
@@ -125,6 +133,14 @@ export default function SemanticSearchView() {
         </div>
       </div>
 
+      {searchError && (
+        <p role="alert" className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-md px-3 py-2">
+          {searchError}
+        </p>
+      )}
+      {!searchError && !isSearching && hasSearched && results.length === 0 && (
+        <p className="text-xs text-[var(--text-muted)] px-1">No clips matched this query in the indexed library.</p>
+      )}
       {/* Results Header */}
       <div className="flex items-center justify-between text-xs text-[var(--text-muted)] px-1">
         <div className="flex items-center gap-2">
@@ -132,7 +148,7 @@ export default function SemanticSearchView() {
             {results.length} Visual Results Found
           </span>
           <span>&bull;</span>
-          <span>Query: &ldquo;{query}&rdquo;</span>
+          <span>Query: &ldquo;{searchedQuery}&rdquo;</span>
         </div>
 
         <div className="flex items-center gap-3 font-mono text-[11px]">

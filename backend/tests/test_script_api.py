@@ -35,10 +35,10 @@ def test_analyze_script_returns_beats_with_intent_query_and_broll(client, instal
     body = response.json()
     assert body["script"] == EV_SCRIPT
     assert (body["model"], body["top_k"]) == ("fake-clip", 3)
-    assert set(body["timings_ms"]) == {"segmentation", "analysis", "retrieval", "beats", "total"}
+    assert set(body["timings_ms"]) == {"segmentation", "analysis", "retrieval", "vibe", "beats", "total"}
     assert body["segmentation"] == {"method": "llm", "error": None}
     first = body["beats"][0]
-    assert first == {
+    expected = {
         "beat_id": "beat-1",
         "order": 1,
         "text": "Electric vehicles are becoming increasingly popular.",
@@ -62,14 +62,20 @@ def test_analyze_script_returns_beats_with_intent_query_and_broll(client, instal
             }
         ],
     }
+    # Original contract unchanged; later phases only add fields.
+    assert {k: first[k] for k in expected} == expected
+    assert {"candidates", "source_status", "pacing", "vibe"} <= set(first)
     assert [b["editorial_intent"] for b in body["beats"]] == ["context", "problem", "context"]
-    assert [k for _, k in search.queries] == [3, 3, 3]  # top_k passed through to every beat's search
+    assert [k for _, k in search.queries] == [12, 12, 12]  # vibe pool: max(3 x top_k, 12) per beat search
 
 
 def test_default_top_k_matches_search(client, install):
     _, search = install()
-    assert client.post("/v1/script/analyze", json={"script": EV_SCRIPT}).json()["top_k"] == 12
-    assert {k for _, k in search.queries} == {12}
+    body = client.post("/v1/script/analyze", json={"script": EV_SCRIPT}).json()
+    assert body["top_k"] == 12
+    assert all(len(b["broll_results"]) <= 12 and len(b["candidates"]) <= 12 for b in body["beats"])
+    # With vibe enabled the local search fetches a larger relevant pool (3 x 12) for vibe re-ranking.
+    assert {k for _, k in search.queries} == {36}
 
 
 def test_partial_failure_is_explicit_per_beat(client, install):

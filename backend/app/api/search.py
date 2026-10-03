@@ -19,9 +19,11 @@ from app.db.models import Video
 from app.db.session import get_session
 from app.api.editorial import MAX_TEXT_LENGTH, clean_text, get_editorial_analyzer
 from app.providers import factory
-from app.services.editorial import EditorialIntentResult
+from app.services.candidates import from_local_hit
+from app.services.editorial import EditorialIntent, EditorialIntentResult
 from app.services.ingestion import thumbnail_path
-from app.services.retrieval import SemanticSearchService
+from app.services.retrieval import MultiQueryHit, SearchHit, SearchOutcome, SemanticSearchService, multi_query_search
+from app.services.vibe import VIBE_WEIGHT_USER, VibeScorer, VibeTags
 
 router = APIRouter(prefix="/v1", tags=["search"])
 
@@ -37,6 +39,9 @@ class SearchRequest(BaseModel):
     query: str = Field(max_length=MAX_TEXT_LENGTH)
     top_k: int = Field(default=12, ge=1, le=50)
     mode: SearchMode = SearchMode.SEMANTIC
+    # Editorial mode only (ignored in semantic mode):
+    intent: EditorialIntent | None = None  # editor-chosen intent; omitted -> the model decides
+    vibe: VibeTags | None = None  # desired feel (controlled vocabulary); re-orders results, never edits the query
 
     @field_validator("query")
     @classmethod
@@ -83,13 +88,20 @@ class SearchResponse(BaseModel):
     mode: SearchMode
     retrieval_query: str  # the text actually embedded and searched
     editorial: EditorialIntentResult | None = None  # set in editorial mode
+    intent_source: str | None = None  # editorial mode: "user" (request.intent) or "model"
+    vibe: VibeTags | None = None  # editorial mode: tags applied to the ranking, if any
     model: str
     results: list[SearchResult]
     timings_ms: dict[str, float]
 
 
 def get_search_service(settings: Settings = Depends(get_settings)) -> SemanticSearchService:
-    return SemanticSearchService(factory.build_embedding_provider(settings), factory.build_vector_store())
+    return SemanticSearchService(
+        factory.build_embedding_provider(settings),
+        factory.build_vector_store(),
+        prompt_ensemble=settings.search_prompt_ensemble,
+        hubness_alpha=settings.search_hubness_alpha,
+    )
 
 
 @router.post("/search")
@@ -101,12 +113,30 @@ def search(
 ) -> SearchResponse:
     started = time.perf_counter()
     editorial, retrieval_query, timings = None, request.query, {}
+    intent_source, vibe = None, None
     if request.mode == SearchMode.EDITORIAL:
         # Built only in this mode, so semantic search never depends on the LLM being configured.
-        editorial = get_editorial_analyzer(settings).analyze(request.query)
+        editorial = get_editorial_analyzer(settings).analyze(request.query, intent=request.intent)
+        intent_source = "user" if request.intent is not None else "model"
         retrieval_query = editorial.retrieval_query
         timings["analysis"] = round((time.perf_counter() - started) * 1000, 1)
-    outcome = service.search(session, retrieval_query, request.top_k)
+    use_vibe = request.mode == SearchMode.EDITORIAL and request.vibe is not None and not request.vibe.is_empty()
+    # With a mood, rank a larger pool of relevant clips so the vibe can choose among them.
+    pool = min(50, max(request.top_k * 3, 30)) if use_vibe else request.top_k
+    if editorial is not None:
+        # Same multi-query retrieval as the script pipeline: primary + alternative shots, each clip
+        # keeps its best score. More robust than one very specific primary caption.
+        multi = multi_query_search(service, session, [editorial.retrieval_query, *editorial.alternative_queries], pool)
+        outcome = SearchOutcome([SearchHit(h.video, h.score) for h in multi.hits], multi.timings_ms)
+    else:
+        outcome = service.search(session, retrieval_query, pool)
+    if use_vibe:
+        # Same vibe mechanism as /v1/script/analyze: re-order the retrieved clips by the selected tags.
+        vibe = request.vibe
+        candidates = [from_local_hit(MultiQueryHit(h.video, h.score, retrieval_query)) for h in outcome.hits]
+        by_key = {c.asset_key: h for c, h in zip(candidates, outcome.hits)}
+        reordered = VibeScorer(service.embedder).rerank(session, candidates, vibe, weight=VIBE_WEIGHT_USER)
+        outcome.hits = [SearchHit(by_key[c.asset_key].video, by_key[c.asset_key].score) for c in reordered][: request.top_k]
     results = [
         SearchResult(score=round(hit.score, 4), **VideoOut.from_model(hit.video).model_dump())
         for hit in outcome.hits
@@ -117,6 +147,8 @@ def search(
         mode=request.mode,
         retrieval_query=retrieval_query,
         editorial=editorial,
+        intent_source=intent_source,
+        vibe=vibe,
         model=service.embedder.model_name,
         results=results,
         timings_ms=timings,

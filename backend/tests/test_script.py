@@ -59,7 +59,13 @@ class ScriptedLLM(LLMProvider):
             if self.segmentation_error:
                 raise self.segmentation_error
             return self.segmentation if isinstance(self.segmentation, str) else json.dumps(self.segmentation)
-        assert json_schema is LLM_RESPONSE_SCHEMA
+        from app.services.editorial import LLM_RESPONSE_SCHEMA_WITH_VIBE
+        from app.services.vibe import VIBE_SCHEMA
+
+        if json_schema is VIBE_SCHEMA:  # stand-alone vibe suggestion: no tags, so candidate order is unchanged
+            return "{}"
+        # The script pipeline may ask for vibe tags in the editorial call; these replies have none.
+        assert json_schema is LLM_RESPONSE_SCHEMA or json_schema is LLM_RESPONSE_SCHEMA_WITH_VIBE
         text = prompt.rsplit("<<<\n", 1)[1].rsplit("\n>>>", 1)[0]  # the beat text inside the editorial prompt
         reply = self.editorial(text)
         if isinstance(reply, Exception):
@@ -215,7 +221,7 @@ def test_every_beat_gets_editorial_analysis_query_and_broll():
     # The existing deterministic query builder is used (topic prepended when the description lacks it).
     assert result.beats[0].editorial.retrieval_query == "electric vehicles, shot of electric scene"
     assert search.queries == [(b.editorial.retrieval_query, 4) for b in result.beats]
-    assert set(result.timings_ms) == {"segmentation", "analysis", "retrieval", "beats", "total"}
+    assert set(result.timings_ms) == {"segmentation", "analysis", "retrieval", "vibe", "beats", "total"}
     assert result.segmentation.method == "llm"
 
 

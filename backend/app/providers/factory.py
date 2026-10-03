@@ -70,6 +70,14 @@ def build_cloud_sources(settings: Settings) -> dict[str, VideoSourceProvider | N
     return sources
 
 
+def build_transcription_provider(settings: Settings):
+    if settings.transcription_provider == "faster_whisper":
+        from app.providers.transcription.faster_whisper import FasterWhisperProvider
+
+        return FasterWhisperProvider(settings.whisper_model)
+    raise ProviderNotConfigured(f"Transcription is not configured (TRANSCRIPTION_PROVIDER='{settings.transcription_provider}')")
+
+
 def build_vector_store() -> VectorStore:
     from app.db.session import get_engine
     from app.vectorstore.pgvector import PgVectorStore

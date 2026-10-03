@@ -5,10 +5,13 @@ import SemanticSearchView from './components/views/SemanticSearchView'
 import EditorialSearchView from './components/views/EditorialSearchView'
 import CinematicIntro from './components/intro/CinematicIntro'
 import HealthModal from './components/modals/HealthModal'
-import { SAMPLE_SCRIPTS, LOCAL_LIBRARY_CLIPS } from './data/libraryData'
-import { analyzeScriptToBeats } from './utils/editorialAnalysis'
-import { getHealth, type HealthResult } from './api/client'
+import { SAMPLE_SCRIPTS } from './data/libraryData'
+import { analyzeScript, beatToScriptBeat, getHealth, SearchError, transcribeAudio, type HealthResult } from './api/client'
 import type { Project, ScriptBeat, BrollClip } from './types/editor'
+
+// Per beat: 3 local library clips + 2 cloud clips. If no cloud provider is enabled on the backend
+// (CLOUD_PROVIDERS), the backend reports it as disabled and fills those slots with local clips.
+const SCRIPT_RETRIEVAL = { local_k: 3, cloud_k: 2, cloud_providers: ['pixabay'], fill: 'backfill' as const }
 
 export default function App() {
   // Navigation Tab State
@@ -26,36 +29,22 @@ export default function App() {
   const [isHealthOpen, setIsHealthOpen] = useState(false)
   const [healthSummary, setHealthSummary] = useState<HealthResult | null>(null)
 
-  // Initialize with curated EV Infrastructure sample
+  // Start with a sample script; beats come only from the backend (POST /v1/script/analyze).
   const initialSample = SAMPLE_SCRIPTS[0]
-  const initialBeats: ScriptBeat[] = initialSample.suggestedBeats.map((b, i) => {
-    const clipMapping = [
-      LOCAL_LIBRARY_CLIPS[26], // #27: EV charging
-      LOCAL_LIBRARY_CLIPS[16], // #17: City traffic night
-      LOCAL_LIBRARY_CLIPS[12], // #13: EV charging plug
-      LOCAL_LIBRARY_CLIPS[18], // #19: Meeting planning
-      LOCAL_LIBRARY_CLIPS[29], // #30: EV solar energy
-    ]
-
-    return {
-      ...b,
-      id: `beat-${b.beat_number}-init`,
-      assigned_clip: clipMapping[i] || LOCAL_LIBRARY_CLIPS[i % LOCAL_LIBRARY_CLIPS.length],
-      status: 'assigned',
-    }
-  })
 
   const [project, setProject] = useState<Project>({
     id: 'prj-ev-01',
     title: initialSample.title,
     raw_script: initialSample.script,
-    beats: initialBeats,
+    beats: [],
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   })
 
-  const [selectedBeatId, setSelectedBeatId] = useState<string | null>(initialBeats[0]?.id || null)
+  const [selectedBeatId, setSelectedBeatId] = useState<string | null>(null)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null)
+  const [analyzeNote, setAnalyzeNote] = useState<string | null>(null)
 
   // Synchronize theme with document element
   useEffect(() => {
@@ -88,66 +77,74 @@ export default function App() {
     }))
   }
 
-  function handleAnalyzeScript() {
-    if (!project.raw_script.trim()) return
+  // Audio narration -> backend transcription -> the same Script -> Beat analysis as typed text.
+  async function handleAudioUpload(file: File) {
+    if (isAnalyzing) return
     setIsAnalyzing(true)
-
-    setTimeout(() => {
-      const generatedBeats = analyzeScriptToBeats(project.raw_script)
-      // Automatically assign initial visual matches from library
-      const beatsWithClips: ScriptBeat[] = generatedBeats.map((b, idx) => ({
-        ...b,
-        assigned_clip: LOCAL_LIBRARY_CLIPS[idx % LOCAL_LIBRARY_CLIPS.length],
-        status: 'assigned',
-      }))
-
-      setProject((prev) => ({
-        ...prev,
-        beats: beatsWithClips,
-        updated_at: new Date().toISOString(),
-      }))
-
-      if (beatsWithClips.length > 0) {
-        setSelectedBeatId(beatsWithClips[0].id)
-      }
+    setAnalyzeError(null)
+    setAnalyzeNote(`Transcribing ${file.name}…`)
+    try {
+      const transcript = await transcribeAudio(file)
+      setProject((prev) => ({ ...prev, raw_script: transcript.text, beats: [], updated_at: new Date().toISOString() }))
+      setAnalyzeNote(`Transcribed ${transcript.duration?.toFixed(0) ?? '?'}s of audio (${transcript.language ?? 'unknown language'}, Whisper ${transcript.model}). Analysing…`)
       setIsAnalyzing(false)
-    }, 400)
+      await handleAnalyzeScript(transcript.text)
+    } catch (error) {
+      setAnalyzeNote(null)
+      setAnalyzeError(error instanceof SearchError ? error.message : 'Audio transcription failed.')
+      setIsAnalyzing(false)
+    }
+  }
+
+  async function handleAnalyzeScript(scriptOverride?: string) {
+    const scriptText = scriptOverride ?? project.raw_script
+    if (!scriptText.trim()) return
+    setIsAnalyzing(true)
+    setAnalyzeError(null)
+    setAnalyzeNote(null)
+    try {
+      const response = await analyzeScript(scriptText, { retrieval: SCRIPT_RETRIEVAL })
+      const beats: ScriptBeat[] = response.beats.map(beatToScriptBeat)
+      setProject((prev) => ({ ...prev, beats, updated_at: new Date().toISOString() }))
+      setSelectedBeatId(beats[0]?.id ?? null)
+      const notes: string[] = []
+      if (response.segmentation.method === 'sentence_fallback') {
+        notes.push(`Beat grouping fell back to one beat per sentence (${response.segmentation.error ?? 'invalid model output'}).`)
+      }
+      const failed = beats.filter((b) => b.status === 'error').length
+      if (failed) notes.push(`${failed} beat(s) could not be analysed; the others are shown.`)
+      const cloudIssues = new Set(
+        beats.flatMap((b) =>
+          Object.entries(b.source_status ?? {})
+            .filter(([name, st]) => name !== 'local' && st.status !== 'ok')
+            .map(([name, st]) => `${name}: ${st.detail ?? st.status}`),
+        ),
+      )
+      if (cloudIssues.size) notes.push(`Cloud results unavailable — ${[...cloudIssues].join('; ')}. Local results are shown.`)
+      if (beats.length === 0) notes.push('The backend returned no beats for this script.')
+      setAnalyzeNote(notes.length ? notes.join(' ') : null)
+    } catch (error) {
+      setAnalyzeError(error instanceof SearchError ? error.message : 'Script analysis failed.')
+    } finally {
+      setIsAnalyzing(false)
+    }
   }
 
   function handleLoadSample(sampleId: string) {
     const sample = SAMPLE_SCRIPTS.find((s) => s.id === sampleId)
     if (!sample) return
-
-    const beats: ScriptBeat[] = sample.suggestedBeats.map((b, i) => {
-      let clip = LOCAL_LIBRARY_CLIPS[i % LOCAL_LIBRARY_CLIPS.length]
-      if (sampleId === 'ev-infrastructure') {
-        const evClips = [LOCAL_LIBRARY_CLIPS[26], LOCAL_LIBRARY_CLIPS[16], LOCAL_LIBRARY_CLIPS[12], LOCAL_LIBRARY_CLIPS[18], LOCAL_LIBRARY_CLIPS[29]]
-        clip = evClips[i] || clip
-      } else if (sampleId === 'ai-medicine') {
-        const medClips = [LOCAL_LIBRARY_CLIPS[7], LOCAL_LIBRARY_CLIPS[35], LOCAL_LIBRARY_CLIPS[34], LOCAL_LIBRARY_CLIPS[8], LOCAL_LIBRARY_CLIPS[31]]
-        clip = medClips[i] || clip
-      } else if (sampleId === 'global-finance') {
-        const finClips = [LOCAL_LIBRARY_CLIPS[14], LOCAL_LIBRARY_CLIPS[32], LOCAL_LIBRARY_CLIPS[1], LOCAL_LIBRARY_CLIPS[41], LOCAL_LIBRARY_CLIPS[37]]
-        clip = finClips[i] || clip
-      }
-
-      return {
-        ...b,
-        id: `beat-${b.beat_number}-${Date.now().toString(36)}`,
-        assigned_clip: clip,
-        status: 'assigned',
-      }
-    })
-
+    // Only the script text is used; beats and footage come from the backend when analysed.
     setProject({
       id: `prj-${sample.id}`,
       title: sample.title,
       raw_script: sample.script,
-      beats,
+      beats: [],
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
-    setSelectedBeatId(beats[0]?.id || null)
+    setSelectedBeatId(null)
+    setAnalyzeError(null)
+    setAnalyzeNote(null)
   }
 
   function handleAssignClipToBeat(beatId: string, clip: BrollClip) {
@@ -177,13 +174,16 @@ export default function App() {
           <ScriptToBeatView
             scriptText={project.raw_script}
             onScriptChange={handleScriptChange}
-            onAnalyzeScript={handleAnalyzeScript}
+            onAnalyzeScript={() => void handleAnalyzeScript()}
             beats={project.beats}
             selectedBeatId={selectedBeatId}
             onSelectBeat={setSelectedBeatId}
             onAssignClipToBeat={handleAssignClipToBeat}
             isAnalyzing={isAnalyzing}
             onLoadSample={handleLoadSample}
+            analyzeError={analyzeError}
+            onAudioUpload={(file) => void handleAudioUpload(file)}
+            analyzeNote={analyzeNote}
           />
         )}
 

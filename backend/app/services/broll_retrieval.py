@@ -9,6 +9,7 @@ sources are not merged (quotas instead), see docs/RETRIEVAL_PLAN.md §3.5.
 """
 
 import logging
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Literal
@@ -36,6 +37,9 @@ class RetrievalPolicy:
     cloud_k: int = 0
     cloud_providers: tuple[str, ...] = ()
     fill: Literal["strict", "backfill"] = "backfill"
+    # Phase 7: fetch at least this many local candidates so vibe re-ranking can choose among them
+    # (quotas still apply afterwards). 0 = no extra pool.
+    vibe_pool: int = 0
 
 
 @dataclass
@@ -61,6 +65,7 @@ class RetrievalOutcome:
     local_hits: list[MultiQueryHit]
     source_status: dict[str, SourceStatus]
     warnings: list[str] = field(default_factory=list)
+    local_pool: list[BrollCandidate] = field(default_factory=list)  # all fetched local candidates, by relevance
 
 
 class CloudBudget:
@@ -68,12 +73,14 @@ class CloudBudget:
 
     def __init__(self, max_requests: int):
         self.remaining = max_requests
+        self._lock = threading.Lock()  # beats are processed concurrently
 
     def take(self) -> bool:
-        if self.remaining <= 0:
-            return False
-        self.remaining -= 1
-        return True
+        with self._lock:
+            if self.remaining <= 0:
+                return False
+            self.remaining -= 1
+            return True
 
 
 class CloudCandidateSource:
@@ -147,7 +154,7 @@ class BrollRetrievalService:
         status: dict[str, SourceStatus] = {}
 
         # Local: unchanged Phase 4.1 behaviour. Fetch enough for backfill when cloud comes up short.
-        local_fetch = policy.local_k + (policy.cloud_k if policy.fill == "backfill" else 0)
+        local_fetch = max(policy.local_k + (policy.cloud_k if policy.fill == "backfill" else 0), policy.vibe_pool)
         local_outcome = multi_query_search(self.search, session, request.queries, max(local_fetch, 1))
         warnings += [f"Query '{q}' failed: {err}" for q, err in local_outcome.failed_queries.items()]
         local = [from_local_hit(h) for h in local_outcome.hits]
@@ -186,4 +193,5 @@ class BrollRetrievalService:
             local_hits=local_outcome.hits[: policy.local_k],
             source_status=status,
             warnings=warnings,
+            local_pool=local,
         )

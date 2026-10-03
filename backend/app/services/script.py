@@ -11,8 +11,10 @@ This module orchestrates existing services; it has no retrieval or query logic o
 
 import logging
 import re
+import threading
 import time
-from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field, replace
 
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
@@ -22,7 +24,7 @@ from app.providers.llm.base import LLMProvider
 from app.services.editorial import EditorialIntentAnalyzer, EditorialIntentResult, load_json_object
 from app.services.broll_retrieval import BeatRequest, BrollRetrievalService, RetrievalPolicy, SourceStatus
 from app.services.candidates import BrollCandidate
-from app.services.vibe import BeatVibe, VibeAnalyzer, VibeScorer, VibeTags
+from app.services.vibe import VIBE_WEIGHT_SUGGESTED, VIBE_WEIGHT_USER, BeatVibe, VibeAnalyzer, VibeScorer, VibeTags
 from app.services.retrieval import MultiQueryHit, SemanticSearchService, multi_query_search
 
 log = logging.getLogger(__name__)
@@ -218,34 +220,49 @@ class ScriptAnalysisService:
     """Orchestrates segmentation, the existing editorial analyzer and the existing semantic search."""
 
     def __init__(self, segmenter: ScriptSegmenter, analyzer: EditorialIntentAnalyzer, search: SemanticSearchService,
-                 retrieval: BrollRetrievalService | None = None, vibe: VibeAnalyzer | None = None):
-        self.vibe = vibe
+                 retrieval: BrollRetrievalService | None = None, vibe: VibeAnalyzer | None = None,
+                 concurrency: int = 1):
+        self.vibe = vibe  # enables vibe tags (suggested in the editorial call) and vibe re-ranking
         self.segmenter = segmenter
         self.analyzer = analyzer
         self.search = search
         self.retrieval = retrieval
+        self.concurrency = max(1, concurrency)
 
     def analyze(self, session: Session, script: str, top_k: int, policy: RetrievalPolicy | None = None,
                 vibe_selected: dict[str, VibeTags] | None = None, vibe_global: VibeTags | None = None,
                 suggest_vibe: bool = True) -> ScriptAnalysis:
         started = time.perf_counter()
         self._vibe_selected, self._vibe_global, self._suggest_vibe = vibe_selected or {}, vibe_global, suggest_vibe
-        self._policy = policy or RetrievalPolicy(local_k=top_k)
+        policy = policy or RetrievalPolicy(local_k=top_k)
+        vibe_active = self.vibe is not None and (suggest_vibe or bool(vibe_selected) or vibe_global is not None)
+        if vibe_active and self.retrieval is not None:
+            # Give the vibe a pool of relevant clips to choose from; quotas are re-applied afterwards.
+            policy = replace(policy, vibe_pool=max(3 * (policy.local_k + policy.cloud_k), 12))
+        self._policy = policy
         self._budget = self.retrieval.new_budget() if self.retrieval else None
         segmentation = self.segmenter.segment_with_fallback(script)
         segmented = time.perf_counter()
         texts = segmentation.beats
-        timings = {"analysis": 0.0, "retrieval": 0.0}
-        # Sequential for now (one local LLM serves requests one at a time anyway). Beats are
-        # independent apart from read-only previous-beat context, so bounded concurrency can be added here.
-        beats = [
-            self._process_beat(
-                session, order, text, top_k,
-                previous=texts[order - 2] if order > 1 else None,
-                timings=timings,
-            )
-            for order, text in enumerate(texts, 1)
-        ]
+        timings = {"analysis": 0.0, "retrieval": 0.0, "vibe": 0.0}
+        lock = threading.Lock()
+
+        def run(order: int) -> BeatResult:
+            # Beats are independent (the previous beat's TEXT is the only shared context), so they can
+            # run concurrently. Each worker uses its own DB session; results keep script order.
+            if session is None or self.concurrency == 1:
+                return self._process_beat(session, order, texts[order - 1], top_k,
+                                          previous=texts[order - 2] if order > 1 else None, timings=timings, lock=lock)
+            with Session(bind=session.get_bind()) as worker_session:
+                return self._process_beat(worker_session, order, texts[order - 1], top_k,
+                                          previous=texts[order - 2] if order > 1 else None, timings=timings, lock=lock)
+
+        orders = list(range(1, len(texts) + 1))
+        if self.concurrency > 1 and len(orders) > 1:
+            with ThreadPoolExecutor(max_workers=min(self.concurrency, len(orders))) as pool:
+                beats = list(pool.map(run, orders))  # map preserves input order
+        else:
+            beats = [run(order) for order in orders]
         finished = time.perf_counter()
         return ScriptAnalysis(
             script=script,
@@ -253,60 +270,79 @@ class ScriptAnalysisService:
             segmentation=segmentation,
             timings_ms={
                 "segmentation": round((segmented - started) * 1000, 1),
-                "analysis": round(timings["analysis"] * 1000, 1),  # editorial LLM calls, all beats
-                "retrieval": round(timings["retrieval"] * 1000, 1),  # embedding + vector search, all beats
-                "beats": round((finished - segmented) * 1000, 1),
+                # Summed over beats (beats overlap when concurrency > 1, so these can exceed "beats").
+                "analysis": round(timings["analysis"] * 1000, 1),  # editorial (+vibe tags) LLM calls
+                "retrieval": round(timings["retrieval"] * 1000, 1),  # embedding + vector search + cloud
+                "vibe": round(timings["vibe"] * 1000, 1),  # vibe re-ranking
+                "beats": round((finished - segmented) * 1000, 1),  # wall time for all beats
                 "total": round((finished - started) * 1000, 1),
             },
         )
 
-    def _process_beat(self, session, order, text, top_k, previous=None, timings=None) -> BeatResult:
+    def _process_beat(self, session, order, text, top_k, previous=None, timings=None, lock=None) -> BeatResult:
         beat = BeatResult(order=order, text=text)
-        timings = timings if timings is not None else {"analysis": 0.0, "retrieval": 0.0}
+        local_timings = {"analysis": 0.0, "retrieval": 0.0, "vibe": 0.0}
         try:
             t0 = time.perf_counter()
             # The previous beat resolves references ("this growth", "it"); the beat text itself is analysed.
-            beat.editorial = self.analyzer.analyze(text, previous=previous)
+            # Vibe tags come from the same LLM call (one call per beat instead of two).
+            want_vibe = self.vibe is not None and self._suggest_vibe
+            beat.editorial = (
+                self.analyzer.analyze(text, previous=previous, suggest_vibe=True)
+                if want_vibe else self.analyzer.analyze(text, previous=previous)
+            )
             t1 = time.perf_counter()
-            timings["analysis"] += t1 - t0
+            local_timings["analysis"] = t1 - t0
             if self.retrieval is None:
                 outcome = multi_query_search(self.search, session, beat.queries, top_k)
                 beat.hits = outcome.hits
                 beat.warnings = [f"Query '{q}' failed: {err}" for q, err in outcome.failed_queries.items()]
+                local_timings["retrieval"] = time.perf_counter() - t1
             else:
                 e = beat.editorial
                 request = BeatRequest(beat.queries, e.topic, [e.visual_description, *e.filmable_visuals])
                 result = self.retrieval.retrieve(session, request, self._policy, self._budget)
                 beat.hits, beat.candidates, beat.source_status = result.local_hits, result.candidates, result.source_status
                 beat.warnings = result.warnings
-                self._apply_vibe(session, beat, previous)
-            timings["retrieval"] += time.perf_counter() - t1
+                t2 = time.perf_counter()
+                local_timings["retrieval"] = t2 - t1
+                self._apply_vibe(session, beat, result.local_pool)
+                local_timings["vibe"] = time.perf_counter() - t2
         except ProviderError as exc:
             # One bad LLM reply or embedding failure should not discard the other beats. Database
             # errors are not caught: they affect every beat and fail the request (503).
             log.warning("Beat %d failed: %s", order, exc)
             beat.error = str(exc)  # ProviderError messages are client-safe
+        if timings is not None:
+            with lock or threading.Lock():
+                for key, value in local_timings.items():
+                    timings[key] += value
         return beat
 
-    def _apply_vibe(self, session, beat: BeatResult, previous: str | None) -> None:
-        """Suggest tags (LLM), pick the active tags, re-order candidates. Never fails the beat."""
-        suggested = None
-        if self.vibe is not None and self._suggest_vibe:
-            e = beat.editorial
-            try:
-                suggested = self.vibe.suggest(beat.text, e.editorial_intent.value, e.visual_description, previous)
-            except ProviderError as exc:
-                beat.warnings.append(f"Vibe suggestion failed: {exc}")
+    def _apply_vibe(self, session, beat: BeatResult, local_pool: list[BrollCandidate]) -> None:
+        """Pick the active tags (user > suggested), re-rank the relevant local pool, keep the quotas.
+        Never fails the beat."""
+        if self.vibe is None:
+            return
+        suggested = beat.editorial.suggested_vibe if beat.editorial else None
         user = self._vibe_selected.get(beat.beat_id) or self._vibe_global
         if user is not None:
-            selected, source = user, "user"
-        elif suggested is not None:
-            selected, source = suggested, "suggested"
+            selected, source, weight = user, "user", VIBE_WEIGHT_USER
+        elif suggested is not None and not suggested.is_empty():
+            selected, source, weight = suggested, "suggested", VIBE_WEIGHT_SUGGESTED
         else:
-            selected, source = VibeTags(), "none"
+            selected, source, weight = VibeTags(), "none", 0.0
         beat.vibe = BeatVibe(suggested=suggested, selected=selected, source=source)
-        if not selected.is_empty() and beat.candidates:
-            try:
-                beat.candidates = VibeScorer(self.search.embedder).rerank(session, beat.candidates, selected)
-            except ProviderError as exc:
-                beat.warnings.append(f"Vibe scoring skipped: {exc}")
+        if selected.is_empty() or not beat.candidates:
+            return
+        local_quota = sum(1 for c in beat.candidates if c.source_type == "local")
+        cloud = [c for c in beat.candidates if c.source_type != "local"]
+        try:
+            pool = local_pool or [c for c in beat.candidates if c.source_type == "local"]
+            reranked = VibeScorer(self.search.embedder).rerank(session, pool + cloud, selected, weight=weight)
+        except ProviderError as exc:
+            beat.warnings.append(f"Vibe scoring skipped: {exc}")
+            return
+        new_local = [c for c in reranked if c.source_type == "local"][:local_quota]
+        new_cloud = [c for c in reranked if c.source_type != "local"]
+        beat.candidates = new_local + new_cloud

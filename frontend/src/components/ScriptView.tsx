@@ -32,7 +32,7 @@ export default function ScriptView() {
     inFlight.current = controller
     setState({ kind: 'loading' })
     try {
-      const response = await analyzeScript(script, TOP_K, controller.signal)
+      const response = await analyzeScript(script, { topK: TOP_K, signal: controller.signal })
       setSelected(0)
       setState({ kind: 'done', response })
     } catch (error) {
