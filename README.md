@@ -252,7 +252,7 @@ RUN_CLIP_MODEL_TESTS=1 RUN_LLM_TESTS=1 uv run pytest   # also run the real CLIP 
   "nearest available", not "relevant". Scores are only comparable within one model.
 - No migration tool: schema changes are applied by `init_db` (additive `ALTER ... IF NOT EXISTS`).
 - Ingestion is sequential and synchronous (CLI only; no ingestion API).
-- Editorial analysis is one sentence at a time (max 500 chars) with no script context; its quality
+- In editorial search and `/v1/editorial/analyze`, analysis is one sentence at a time (max 500 chars) with no script context (unlike `/v1/script/analyze`, which passes surrounding beat context); its quality
   depends on the LLM (a small local model is fast and free but less nuanced than a hosted one).
 
 ## Security

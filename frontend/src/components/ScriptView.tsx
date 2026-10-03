@@ -180,7 +180,7 @@ function SearchedFor({ beat }: { beat: Beat }) {
         <div className="font-medium">Queries searched (clips ranked by their best match)</div>
         <ol className="mt-1 list-decimal pl-5">
           {[beat.retrieval_query, ...beat.alternative_queries].map((query, i) => (
-            <li key={query}>
+            <li key={`${i}-${query}`}>
               <code className="rounded bg-slate-100 px-1 text-slate-800">{query}</code>
               {i === 0 && <span className="ml-1 text-xs text-slate-500">(primary)</span>}
             </li>

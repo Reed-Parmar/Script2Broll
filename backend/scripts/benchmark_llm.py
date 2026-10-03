@@ -107,9 +107,11 @@ def main() -> int:
                              for b, ref in zip(r["beats"], c[3]))
         fallbacks = sum(r["method"] == "sentence_fallback" for run in runs for r in run)
         errors = sum("error" in b for run in runs for r in run for b in r["beats"])
+        med_seg = f"{statistics.median(seg_ms):.0f}" if seg_ms else "–"
+        med_beat = f"{statistics.median(beat_ms):.0f}" if beat_ms else "–"
         summary.append(
             f"| {model} | {beats_as_ref}/{len(CASES)} | {intents_as_ref} | {same_beats}/{len(CASES)} | {same_analysis}/{len(CASES)} | "
-            f"{fallbacks} | {errors} | {statistics.median(seg_ms):.0f} | {statistics.median(beat_ms):.0f} |"
+            f"{fallbacks} | {errors} | {med_seg} | {med_beat} |"
         )
 
         lines += [f"## {model}", ""]

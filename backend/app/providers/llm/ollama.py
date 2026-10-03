@@ -34,7 +34,7 @@ class OllamaLLMProvider(LLMProvider):
             raise ProviderError("Ollama request timed out") from None
         except httpx.HTTPError as exc:
             raise ProviderError(f"Ollama is not reachable at {self._base_url} ({type(exc).__name__})") from None
-        if response.status_code == 404:
+        if response.status_code == 404 and path == "/api/generate":
             raise ProviderError(f"Ollama model '{self.model}' not found (run: ollama pull {self.model})")
         if response.status_code != 200:
             raise ProviderError(f"Ollama error (HTTP {response.status_code})")
