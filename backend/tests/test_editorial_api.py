@@ -49,6 +49,9 @@ def test_analyze_returns_structured_intent(client, use_llm):
         "original_text": EV_SENTENCE,
         **EV_ANALYSIS,
         "retrieval_query": EV_QUERY,
+        # Phase 4.1 additions; empty because this (older-style) reply has no filmable_visuals.
+        "filmable_visuals": [],
+        "alternative_queries": [],
     }
 
 

@@ -36,6 +36,10 @@ class ScriptRequest(BaseModel):
         return value
 
 
+class BeatClip(SearchResult):
+    matched_query: str  # which of the beat's queries gave this clip its (best) score
+
+
 class BeatOut(BaseModel):
     beat_id: str
     order: int
@@ -47,8 +51,13 @@ class BeatOut(BaseModel):
     topic: str | None = None
     visual_role: str | None = None
     visual_description: str | None = None
-    retrieval_query: str | None = None
-    broll_results: list[SearchResult] = []
+    retrieval_query: str | None = None  # primary query
+    # Phase 4.1 (additive): other filmable shots and the queries built from them. Clips are the
+    # union of all queries' results, one entry per video, ranked by its best similarity.
+    filmable_visuals: list[str] = []
+    alternative_queries: list[str] = []
+    warnings: list[str] = []  # non-fatal problems, e.g. one of the queries failed
+    broll_results: list[BeatClip] = []
 
     @classmethod
     def from_result(cls, beat: BeatResult) -> "BeatOut":
@@ -64,14 +73,26 @@ class BeatOut(BaseModel):
             visual_role=e.visual_role if e else None,
             visual_description=e.visual_description if e else None,
             retrieval_query=e.retrieval_query if e else None,
+            filmable_visuals=e.filmable_visuals if e else [],
+            alternative_queries=e.alternative_queries if e else [],
+            warnings=beat.warnings,
             broll_results=[
-                SearchResult(score=round(hit.score, 4), **VideoOut.from_model(hit.video).model_dump()) for hit in beat.hits
+                BeatClip(score=round(hit.score, 4), matched_query=hit.query, **VideoOut.from_model(hit.video).model_dump())
+                for hit in beat.hits
             ],
         )
 
 
+class SegmentationOut(BaseModel):
+    # llm: beats grouped by the language model; single_sentence: nothing to group;
+    # sentence_fallback: the model's grouping was invalid, so each sentence became a beat.
+    method: Literal["llm", "single_sentence", "sentence_fallback"]
+    error: str | None = None  # why the fallback was used
+
+
 class ScriptResponse(BaseModel):
     script: str
+    segmentation: SegmentationOut
     model: str  # embedding model the B-roll was ranked with
     top_k: int
     beats: list[BeatOut]
@@ -98,6 +119,7 @@ def analyze_script(
         raise HTTPException(422, str(exc)) from None
     return ScriptResponse(
         script=analysis.script,
+        segmentation=SegmentationOut(method=analysis.segmentation.method, error=analysis.segmentation.error),
         model=service.search.embedder.model_name,
         top_k=request.top_k,
         beats=[BeatOut.from_result(beat) for beat in analysis.beats],

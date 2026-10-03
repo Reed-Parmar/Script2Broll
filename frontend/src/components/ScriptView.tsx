@@ -75,6 +75,12 @@ export default function ScriptView() {
         )}
         {state.kind === 'done' && (
           <>
+            {state.response.segmentation.method === 'sentence_fallback' && (
+              <p role="status" className="mb-3 rounded border border-amber-200 bg-amber-50 p-2 text-sm text-amber-900">
+                The beat grouping from the language model was invalid, so each sentence became its own beat (
+                {state.response.segmentation.error}).
+              </p>
+            )}
             <p className="mb-3 text-sm text-slate-500">
               {beats.length} beats · {state.response.top_k} clips per beat ({state.response.model}) ·{' '}
               {Math.round((state.response.timings_ms.total ?? 0) / 100) / 10} s
@@ -138,14 +144,49 @@ function BeatDetail({ beat }: { beat: Beat }) {
           }}
         />
       )}
+      {beat.warnings.map((warning) => (
+        <p key={warning} className="mb-2 rounded border border-amber-200 bg-amber-50 p-2 text-sm text-amber-900">
+          {warning}
+        </p>
+      ))}
+      {beat.editorial_intent && <SearchedFor beat={beat} />}
       {beat.status === 'ok' && beat.broll_results.length === 0 && (
         <p className="text-slate-500">No clips found for this beat.</p>
       )}
       <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {beat.broll_results.map((result, i) => (
-          <ResultCard key={result.video_id} result={result} rank={i + 1} />
+          <ResultCard key={result.video_id} result={result} rank={i + 1} note={`via: ${result.matched_query}`} />
         ))}
       </ul>
+    </div>
+  )
+}
+
+/** What the beat's B-roll was searched for: the filmable concepts and every query that was run. */
+function SearchedFor({ beat }: { beat: Beat }) {
+  return (
+    <div className="mb-4 grid gap-3 text-sm sm:grid-cols-2">
+      {beat.filmable_visuals.length > 0 && (
+        <div>
+          <div className="font-medium">Visual concepts</div>
+          <ul className="mt-1 list-disc pl-5 text-slate-700">
+            {beat.filmable_visuals.map((visual) => (
+              <li key={visual}>{visual}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <div>
+        <div className="font-medium">Queries searched (clips ranked by their best match)</div>
+        <ol className="mt-1 list-decimal pl-5">
+          {[beat.retrieval_query, ...beat.alternative_queries].map((query, i) => (
+            <li key={query}>
+              <code className="rounded bg-slate-100 px-1 text-slate-800">{query}</code>
+              {i === 0 && <span className="ml-1 text-xs text-slate-500">(primary)</span>}
+            </li>
+          ))}
+        </ol>
+      </div>
     </div>
   )
 }

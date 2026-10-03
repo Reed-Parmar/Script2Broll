@@ -35,7 +35,8 @@ def test_analyze_script_returns_beats_with_intent_query_and_broll(client, instal
     body = response.json()
     assert body["script"] == EV_SCRIPT
     assert (body["model"], body["top_k"]) == ("fake-clip", 3)
-    assert set(body["timings_ms"]) == {"segmentation", "beats", "total"}
+    assert set(body["timings_ms"]) == {"segmentation", "analysis", "retrieval", "beats", "total"}
+    assert body["segmentation"] == {"method": "llm", "error": None}
     first = body["beats"][0]
     assert first == {
         "beat_id": "beat-1",
@@ -48,12 +49,16 @@ def test_analyze_script_returns_beats_with_intent_query_and_broll(client, instal
         "visual_role": "show the subject",
         "visual_description": "shot of electric scene",
         "retrieval_query": "electric vehicles, shot of electric scene",
+        "filmable_visuals": [],
+        "alternative_queries": [],
+        "warnings": [],
         "broll_results": [
             {
                 "video_id": 1, "score": 0.3, "source": "Pixabay", "source_id": "1001",
                 "source_url": "https://pixabay.com/videos/id-1/", "creator": "jdoe",
                 "tags": ["electric car", "charging"], "duration": 8.4, "width": 1280, "height": 720,
                 "video_url": "/v1/videos/1/file", "thumbnail_url": "/v1/videos/1/thumbnail",
+                "matched_query": "electric vehicles, shot of electric scene",
             }
         ],
     }
@@ -101,11 +106,14 @@ def test_too_many_sentences_is_422(client, install):
     assert llm.calls == []
 
 
-def test_invalid_segmentation_is_502(client, install):
+def test_invalid_segmentation_falls_back_and_says_so(client, install):
     install(llm=ScriptedLLM(segmentation={"beats": [{"sentences": [1]}, {"sentences": [3]}]}))
     response = client.post("/v1/script/analyze", json={"script": EV_SCRIPT})
-    assert response.status_code == 502
-    assert "cover sentences 1-3" in response.json()["detail"]
+    assert response.status_code == 200
+    body = response.json()
+    assert body["segmentation"]["method"] == "sentence_fallback"
+    assert "cover sentences 1-3" in body["segmentation"]["error"]
+    assert len(body["beats"]) == 3 and all(b["status"] == "ok" for b in body["beats"])
 
 
 def test_llm_unavailable_is_502(client, install):

@@ -100,12 +100,23 @@ export interface Beat {
   topic: string | null
   visual_role: string | null
   visual_description: string | null
+  /** Primary query; the clips are the union of this and the alternative queries' results. */
   retrieval_query: string | null
-  broll_results: SearchResult[]
+  filmable_visuals: string[]
+  alternative_queries: string[]
+  /** Non-fatal problems, e.g. one of the queries failed. */
+  warnings: string[]
+  broll_results: BeatClip[]
+}
+
+export interface BeatClip extends SearchResult {
+  /** The query that gave this clip its best score. */
+  matched_query: string
 }
 
 export interface ScriptResponse {
   script: string
+  segmentation: { method: 'llm' | 'single_sentence' | 'sentence_fallback'; error: string | null }
   model: string
   top_k: number
   beats: Beat[]

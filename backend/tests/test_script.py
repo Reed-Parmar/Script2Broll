@@ -215,7 +215,8 @@ def test_every_beat_gets_editorial_analysis_query_and_broll():
     # The existing deterministic query builder is used (topic prepended when the description lacks it).
     assert result.beats[0].editorial.retrieval_query == "electric vehicles, shot of electric scene"
     assert search.queries == [(b.editorial.retrieval_query, 4) for b in result.beats]
-    assert set(result.timings_ms) == {"segmentation", "beats", "total"}
+    assert set(result.timings_ms) == {"segmentation", "analysis", "retrieval", "beats", "total"}
+    assert result.segmentation.method == "llm"
 
 
 def test_one_llm_client_serves_segmentation_and_all_beats():
@@ -254,9 +255,19 @@ def test_search_failure_keeps_the_analysis_and_reports_the_error():
     assert beats[0].error is None and beats[2].error is None
 
 
-def test_segmentation_failure_fails_the_whole_analysis():
+def test_invalid_segmentation_falls_back_to_one_beat_per_sentence():
+    result = service(llm=ScriptedLLM(segmentation="not json")).analyze(None, EV_SCRIPT, 3)
+    assert (result.segmentation.method, result.segmentation.error) == ("sentence_fallback", "The language model returned malformed JSON")
+    assert [b.text for b in result.beats] == split_sentences(EV_SCRIPT)
+    assert all(b.error is None for b in result.beats)  # the beats themselves are still analysed
+
+
+def test_strict_segment_still_raises_on_invalid_output():
     with pytest.raises(SegmentationError):
-        service(llm=ScriptedLLM(segmentation="not json")).analyze(None, EV_SCRIPT, 3)
+        ScriptSegmenter(ScriptedLLM(segmentation="not json")).segment(EV_SCRIPT)
+
+
+def test_unreachable_llm_fails_the_whole_analysis():
     with pytest.raises(ProviderError, match="not reachable"):
         service(llm=ScriptedLLM(segmentation_error=ProviderError("Ollama is not reachable"))).analyze(None, EV_SCRIPT, 3)
 

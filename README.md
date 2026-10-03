@@ -77,6 +77,29 @@ that was actually embedded) and, in editorial mode, the full `editorial` analysi
 timing. Semantic search never calls the LLM. The UI has a Semantic / Editorial toggle and shows the
 interpretation above the results.
 
+## Full-script analysis (Phase 4 / 4.1)
+
+`POST /v1/script/analyze` with `{"script": "...", "top_k": 12}` (max 5000 chars / 40 sentences).
+
+```
+script → sentences (deterministic) → LLM groups consecutive sentence numbers into beats
+       → per beat: EditorialIntentAnalyzer (previous beat as context when the line says "this/it/they…")
+       → primary query + up to 3 alternative queries (from filmable_visuals, same deterministic builder)
+       → existing semantic search per query → union, one entry per video, ranked by best similarity
+```
+
+- **Beat text is never rewritten**: it is rebuilt from the original sentences. The model may merge
+  sentences but not split one; a sentence with two ideas stays one beat (its alternative queries
+  often cover the second idea).
+- **Fallbacks are explicit**: an invalid grouping falls back to one beat per sentence
+  (`segmentation.method = "sentence_fallback"` plus the reason); a failed beat has
+  `status: "error"`; a failed query is listed in that beat's `warnings`.
+- **Transparent ranking**: each clip's score is its best cosine similarity over the beat's queries,
+  and `matched_query` says which query that was. No blended or learned score.
+- Beats expose `filmable_visuals`, `retrieval_query` (primary) and `alternative_queries`.
+- Compare local models: `uv run python -m scripts.benchmark_llm --models qwen2.5:3b qwen2.5:7b --out report.md`
+  (human-review report; reference labels are hints, not ground truth).
+
 ## Layout
 
 ```
