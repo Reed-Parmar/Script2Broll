@@ -1,1 +1,61 @@
 @import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-app: #0b0c10;
+    --bg-surface: #121319;
+    --bg-panel: #161820;
+    --bg-panel-hover: #1c1e28;
+    --bg-card: #181a23;
+    --border-subtle: #242735;
+    --border-focus: #3b82f6;
+    --text-primary: #ededf2;
+    --text-secondary: #8e95a5;
+    --text-muted: #5e6475;
+    --accent: #3b82f6;
+    --accent-hover: #60a5fa;
+  }
+
+  body {
+    background-color: var(--bg-app);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    user-select: none;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Precision scrollbars for dense editor panels */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0f1015;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #252836;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #35394d;
+}
+
+/* Custom range slider for video timeline & audio scrubber */
+input[type="range"] {
+  accent-color: #3b82f6;
+}
+
+/* Subtle timecode font */
+.timecode {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-feature-settings: "tnum" 1;
+  letter-spacing: -0.02em;
+}
