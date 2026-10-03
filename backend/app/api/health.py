@@ -72,3 +72,18 @@ def health_ai(settings: Settings = Depends(get_settings)) -> JSONResponse:
 @router.get("/pixabay")
 def health_pixabay(settings: Settings = Depends(get_settings)) -> JSONResponse:
     return _result(lambda: factory.build_video_source(settings).check())
+
+
+@router.get("/providers")
+def health_providers(settings: Settings = Depends(get_settings)) -> dict:
+    """Status of each query-time cloud provider (CLOUD_PROVIDERS). Always 200; status per provider."""
+    providers = {}
+    for name, provider in factory.build_cloud_sources(settings).items():
+        if provider is None:
+            providers[name] = {"status": "not_configured"}
+            continue
+        try:
+            providers[name] = {"status": "ok", **provider.check()}
+        except ProviderError as exc:
+            providers[name] = {"status": "error", "detail": str(exc)}
+    return {"status": "ok", "cloud_providers": settings.cloud_providers, "providers": providers}

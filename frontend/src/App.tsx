@@ -1,112 +1,199 @@
-import { useRef, useState, type FormEvent } from 'react'
-import { SearchError, searchVideos, type SearchResponse } from './api/client'
-import HealthPanel from './components/HealthPanel'
-import ResultCard from './components/ResultCard'
+import { useState, useEffect } from 'react'
+import Navbar, { type NavTab } from './components/navigation/Navbar'
+import ScriptToBeatView from './components/views/ScriptToBeatView'
+import SemanticSearchView from './components/views/SemanticSearchView'
+import CinematicIntro from './components/intro/CinematicIntro'
+import HealthModal from './components/modals/HealthModal'
+import { SAMPLE_SCRIPTS } from './data/libraryData'
+import { analyzeScript, beatToScriptBeat, getHealth, SearchError, transcribeAudio, type HealthResult } from './api/client'
+import type { Project, ScriptBeat, BrollClip } from './types/editor'
 
-const TOP_K = 12
-const EXAMPLES = ['people charging an electric vehicle', 'busy city traffic', 'doctor treating a patient', 'mountain landscape']
-
-type State =
-  | { kind: 'idle' }
-  | { kind: 'loading' }
-  | { kind: 'error'; message: string }
-  | { kind: 'done'; response: SearchResponse }
+// Per beat: 3 local library clips + 2 cloud clips. If no cloud provider is enabled on the backend
+// (CLOUD_PROVIDERS), the backend reports it as disabled and fills those slots with local clips.
+const SCRIPT_RETRIEVAL = { local_k: 3, cloud_k: 2, cloud_providers: ['pixabay'], fill: 'backfill' as const }
 
 export default function App() {
-  const [query, setQuery] = useState('')
-  const [state, setState] = useState<State>({ kind: 'idle' })
-  const inFlight = useRef<AbortController | null>(null)
+  // Navigation Tab State
+  const [activeTab, setActiveTab] = useState<NavTab>('script_to_beat')
 
-  async function runSearch(text: string) {
-    const trimmed = text.trim()
-    if (!trimmed) {
-      setState({ kind: 'error', message: 'Please enter a search query.' })
-      return
+  // Theme State: 'dark' | 'light' (defaults to 'dark', persists in localStorage)
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    return (localStorage.getItem('script2broll-theme') as 'dark' | 'light') || 'dark'
+  })
+
+  // Cinematic Intro: Plays on every refresh/restart (as requested)
+  const [showIntro, setShowIntro] = useState(true)
+
+  // Health Diagnostics
+  const [isHealthOpen, setIsHealthOpen] = useState(false)
+  const [healthSummary, setHealthSummary] = useState<HealthResult | null>(null)
+
+  // Start with a sample script; beats come only from the backend (POST /v1/script/analyze).
+  const initialSample = SAMPLE_SCRIPTS[0]
+
+  const [project, setProject] = useState<Project>({
+    id: 'prj-ev-01',
+    title: initialSample.title,
+    raw_script: initialSample.script,
+    beats: [],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  })
+
+  const [selectedBeatId, setSelectedBeatId] = useState<string | null>(null)
+  const [isAnalyzing, setIsAnalyzing] = useState(false)
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null)
+  const [analyzeNote, setAnalyzeNote] = useState<string | null>(null)
+
+  // Synchronize theme with document element
+  useEffect(() => {
+    const root = document.documentElement
+    if (theme === 'dark') {
+      root.classList.add('dark')
+      root.classList.remove('light')
+    } else {
+      root.classList.add('light')
+      root.classList.remove('dark')
     }
-    inFlight.current?.abort()
-    const controller = new AbortController()
-    inFlight.current = controller
-    setState({ kind: 'loading' })
+    localStorage.setItem('script2broll-theme', theme)
+  }, [theme])
+
+  // Check backend health on mount
+  useEffect(() => {
+    getHealth('/health').then((res) => setHealthSummary(res))
+  }, [])
+
+  function toggleTheme() {
+    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))
+  }
+
+  // Script & Beat Handlers
+  function handleScriptChange(text: string) {
+    setProject((prev) => ({
+      ...prev,
+      raw_script: text,
+      updated_at: new Date().toISOString(),
+    }))
+  }
+
+  // Audio narration -> backend transcription -> the same Script -> Beat analysis as typed text.
+  async function handleAudioUpload(file: File) {
+    if (isAnalyzing) return
+    setIsAnalyzing(true)
+    setAnalyzeError(null)
+    setAnalyzeNote(`Transcribing ${file.name}…`)
     try {
-      const response = await searchVideos(trimmed, TOP_K, controller.signal)
-      setState({ kind: 'done', response })
+      const transcript = await transcribeAudio(file)
+      setProject((prev) => ({ ...prev, raw_script: transcript.text, beats: [], updated_at: new Date().toISOString() }))
+      setAnalyzeNote(`Transcribed ${transcript.duration?.toFixed(0) ?? '?'}s of audio (${transcript.language ?? 'unknown language'}, Whisper ${transcript.model}). Analysing…`)
+      setIsAnalyzing(false)
+      await handleAnalyzeScript(transcript.text)
     } catch (error) {
-      if (controller.signal.aborted) return
-      setState({ kind: 'error', message: error instanceof SearchError ? error.message : 'Something went wrong.' })
+      setAnalyzeNote(null)
+      setAnalyzeError(error instanceof SearchError ? error.message : 'Audio transcription failed.')
+      setIsAnalyzing(false)
     }
   }
 
-  function onSubmit(event: FormEvent) {
-    event.preventDefault()
-    void runSearch(query)
+  async function handleAnalyzeScript(scriptOverride?: string) {
+    const scriptText = scriptOverride ?? project.raw_script
+    if (!scriptText.trim()) return
+    setIsAnalyzing(true)
+    setAnalyzeError(null)
+    setAnalyzeNote(null)
+    try {
+      const response = await analyzeScript(scriptText, { retrieval: SCRIPT_RETRIEVAL })
+      const beats: ScriptBeat[] = response.beats.map(beatToScriptBeat)
+      setProject((prev) => ({ ...prev, beats, updated_at: new Date().toISOString() }))
+      setSelectedBeatId(beats[0]?.id ?? null)
+      const notes: string[] = []
+      if (response.segmentation.method === 'sentence_fallback') {
+        notes.push(`Beat grouping fell back to one beat per sentence (${response.segmentation.error ?? 'invalid model output'}).`)
+      }
+      const failed = beats.filter((b) => b.status === 'error').length
+      if (failed) notes.push(`${failed} beat(s) could not be analysed; the others are shown.`)
+      const cloudIssues = new Set(
+        beats.flatMap((b) =>
+          Object.entries(b.source_status ?? {})
+            .filter(([name, st]) => name !== 'local' && st.status !== 'ok')
+            .map(([name, st]) => `${name}: ${st.detail ?? st.status}`),
+        ),
+      )
+      if (cloudIssues.size) notes.push(`Cloud results unavailable — ${[...cloudIssues].join('; ')}. Local results are shown.`)
+      if (beats.length === 0) notes.push('The backend returned no beats for this script.')
+      setAnalyzeNote(notes.length ? notes.join(' ') : null)
+    } catch (error) {
+      setAnalyzeError(error instanceof SearchError ? error.message : 'Script analysis failed.')
+    } finally {
+      setIsAnalyzing(false)
+    }
+  }
+
+  function handleLoadSample(sampleId: string) {
+    const sample = SAMPLE_SCRIPTS.find((s) => s.id === sampleId)
+    if (!sample) return
+    // Only the script text is used; beats and footage come from the backend when analysed.
+    setProject({
+      id: `prj-${sample.id}`,
+      title: sample.title,
+      raw_script: sample.script,
+      beats: [],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    setSelectedBeatId(null)
+    setAnalyzeError(null)
+    setAnalyzeNote(null)
+  }
+
+  function handleAssignClipToBeat(beatId: string, clip: BrollClip) {
+    setProject((prev) => ({
+      ...prev,
+      beats: prev.beats.map((b) => (b.id === beatId ? { ...b, assigned_clip: clip, status: 'assigned' } : b)),
+      updated_at: new Date().toISOString(),
+    }))
   }
 
   return (
-    <main className="mx-auto max-w-6xl p-6 font-sans text-slate-900 sm:p-8">
-      <h1 className="text-2xl font-semibold">Script2Broll</h1>
-      <p className="mt-1 text-slate-600">Semantic B-roll search: describe the shot, get matching stock clips.</p>
+    <div className="min-h-screen w-screen flex flex-col bg-[var(--bg-app)] text-[var(--text-primary)] transition-colors duration-200">
+      {/* Top Navbar */}
+      <Navbar
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        onOpenHealth={() => setIsHealthOpen(true)}
+        healthSummary={healthSummary}
+        onReplayIntro={() => setShowIntro(true)}
+      />
 
-      <form onSubmit={onSubmit} className="mt-6 flex gap-2">
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="e.g. people charging an electric vehicle"
-          maxLength={500}
-          aria-label="Search query"
-          className="min-w-0 flex-1 rounded border border-slate-300 px-3 py-2 focus:border-slate-500 focus:outline-none"
-        />
-        <button
-          type="submit"
-          disabled={state.kind === 'loading'}
-          className="rounded bg-slate-900 px-5 py-2 text-white hover:bg-slate-700 disabled:opacity-60">
-          {state.kind === 'loading' ? 'Searching…' : 'Search'}
-        </button>
-      </form>
-      <div className="mt-2 flex flex-wrap gap-2 text-sm">
-        {EXAMPLES.map((example) => (
-          <button
-            key={example}
-            onClick={() => {
-              setQuery(example)
-              void runSearch(example)
-            }}
-            className="rounded-full border border-slate-200 px-3 py-1 text-slate-600 hover:bg-slate-100">
-            {example}
-          </button>
-        ))}
-      </div>
+      {/* Main Content Area based on Selected Tab */}
+      <main className="flex-1 flex flex-col min-h-0">
+        {activeTab === 'script_to_beat' && (
+          <ScriptToBeatView
+            scriptText={project.raw_script}
+            onScriptChange={handleScriptChange}
+            onAnalyzeScript={() => void handleAnalyzeScript()}
+            beats={project.beats}
+            selectedBeatId={selectedBeatId}
+            onSelectBeat={setSelectedBeatId}
+            onAssignClipToBeat={handleAssignClipToBeat}
+            isAnalyzing={isAnalyzing}
+            onLoadSample={handleLoadSample}
+            analyzeError={analyzeError}
+            onAudioUpload={(file) => void handleAudioUpload(file)}
+            analyzeNote={analyzeNote}
+          />
+        )}
 
-      <section className="mt-6" aria-live="polite">
-        {state.kind === 'loading' && <p className="text-slate-500">Searching…</p>}
-        {state.kind === 'error' && (
-          <p role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-red-800">
-            {state.message}
-          </p>
-        )}
-        {state.kind === 'done' && state.response.results.length === 0 && (
-          <p className="text-slate-500">No clips found. The library may not be indexed yet (run scripts.ingest).</p>
-        )}
-        {state.kind === 'done' && state.response.results.length > 0 && (
-          <>
-            <p className="mb-3 text-sm text-slate-500">
-              {state.response.results.length} results for “{state.response.query}” · ranked by cosine similarity (
-              {state.response.model}) · {Math.round(state.response.timings_ms.total ?? 0)} ms
-            </p>
-            <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {state.response.results.map((result, i) => (
-                <ResultCard key={result.video_id} result={result} rank={i + 1} />
-              ))}
-            </ul>
-          </>
-        )}
-      </section>
+        {activeTab === 'semantic_search' && <SemanticSearchView />}
+      </main>
 
-      <details className="mt-10">
-        <summary className="cursor-pointer text-sm text-slate-500">Service status</summary>
-        <div className="mt-3 max-w-2xl">
-          <HealthPanel />
-        </div>
-      </details>
-    </main>
+      {/* Service Diagnostics Modal */}
+      <HealthModal isOpen={isHealthOpen} onClose={() => setIsHealthOpen(false)} />
+
+      {/* 2-3s Cinematic Studio Intro on every refresh / restart */}
+      {showIntro && <CinematicIntro onComplete={() => setShowIntro(false)} />}
+    </div>
   )
 }
