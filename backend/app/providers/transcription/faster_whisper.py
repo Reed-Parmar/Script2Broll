@@ -66,5 +66,10 @@ class FasterWhisperProvider(TranscriptionProvider):
                 parts = [TranscriptSegment(round(s.start, 2), round(s.end, 2), s.text.strip()) for s in segments]
         except Exception as exc:  # unreadable/corrupt audio
             raise ProviderError(f"Could not transcribe the audio ({type(exc).__name__})") from None
-        text = " ".join(p.text for p in parts if p.text).strip()
+        for p in parts:  # drop undecodable characters (U+FFFD) Whisper sometimes emits
+            p.text = " ".join(p.text.replace("�", " ").split())
+        # One paragraph per spoken segment: speech often lacks sentence punctuation, so without these
+        # boundaries a whole recording becomes a single "sentence" and therefore a single beat. The
+        # script pipeline treats paragraphs as units and the LLM still groups them into beats.
+        text = "\n\n".join(p.text for p in parts if p.text).strip()
         return Transcript(text=text, language=info.language, duration=round(info.duration, 2), segments=parts)

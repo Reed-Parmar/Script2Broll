@@ -53,11 +53,10 @@ export default function Navbar({
       <nav className="flex items-center bg-[var(--bg-card)] border border-[var(--border-subtle)] rounded-lg p-1 text-xs font-medium">
         <button
           onClick={() => onTabChange('script_to_beat')}
-          className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md transition-all ${
-            activeTab === 'script_to_beat'
+          className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md transition-all ${activeTab === 'script_to_beat'
               ? 'bg-[var(--bg-surface)] text-blue-500 shadow-xs font-semibold'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-          }`}
+            }`}
         >
           <FileText className="w-3.5 h-3.5" />
           <span>Script to Beat</span>
@@ -65,17 +64,16 @@ export default function Navbar({
 
         <button
           onClick={() => onTabChange('semantic_search')}
-          className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md transition-all ${
-            activeTab === 'semantic_search'
+          className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md transition-all ${activeTab === 'semantic_search'
               ? 'bg-[var(--bg-surface)] text-blue-500 shadow-xs font-semibold'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-          }`}
+            }`}
         >
           <Search className="w-3.5 h-3.5" />
           <span>Semantic Search</span>
         </button>
 
-        <button
+        {/* <button
           onClick={() => onTabChange('editorial_search')}
           className={`flex items-center gap-2 px-3.5 py-1.5 rounded-md transition-all ${
             activeTab === 'editorial_search'
@@ -85,7 +83,7 @@ export default function Navbar({
         >
           <Sparkles className="w-3.5 h-3.5" />
           <span>Editorial Search</span>
-        </button>
+        </button> */}
       </nav>
 
       {/* Right Controls: Replay Intro, Health, Theme Toggle */}
@@ -107,15 +105,14 @@ export default function Navbar({
           className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg bg-[var(--bg-card)] hover:bg-[var(--bg-hover)] border border-[var(--border-subtle)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
         >
           <span
-            className={`w-2 h-2 rounded-full ${
-              isHealthy
+            className={`w-2 h-2 rounded-full ${isHealthy
                 ? 'bg-emerald-500'
                 : isWarning
-                ? 'bg-amber-500'
-                : isError
-                ? 'bg-rose-500'
-                : 'bg-slate-400'
-            }`}
+                  ? 'bg-amber-500'
+                  : isError
+                    ? 'bg-rose-500'
+                    : 'bg-slate-400'
+              }`}
           />
           <Server className="w-3.5 h-3.5 text-[var(--text-muted)]" />
           <span className="hidden lg:inline text-[11px]">

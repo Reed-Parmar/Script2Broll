@@ -46,12 +46,40 @@ class SegmentationError(ProviderError):
     """The language model answered, but not with a valid segmentation."""
 
 
+MAX_UNIT_WORDS = 20  # longer "sentences" (run-ons, unpunctuated speech) are split into clauses
+_TARGET_UNIT_WORDS = 14
+_MIN_UNIT_WORDS = 6
+_CONNECTORS = {"and", "but", "while", "which", "where", "when", "because", "so", "then", "whereas", "although",
+               "though", "however", "yet", "or", "who", "that"}
+
+
+def _split_long(sentence: str) -> list[str]:
+    """Split an over-long sentence at clause boundaries (after a comma / before a connector word),
+    keeping the exact original words. Falls back to a hard break at MAX_UNIT_WORDS."""
+    words = sentence.split(" ")
+    if len(words) <= MAX_UNIT_WORDS:
+        return [sentence]
+    pieces, start = [], 0
+    while len(words) - start > MAX_UNIT_WORDS:
+        lo, hi = start + _MIN_UNIT_WORDS, start + MAX_UNIT_WORDS
+        breaks = [i for i in range(lo, hi + 1)
+                  if words[i - 1].endswith((",", ";", ":")) or words[i].lower().strip(",") in _CONNECTORS]
+        cut = min(breaks, key=lambda i: abs(i - (start + _TARGET_UNIT_WORDS))) if breaks else hi
+        pieces.append(" ".join(words[start:cut]))
+        start = cut
+    pieces.append(" ".join(words[start:]))
+    return pieces
+
+
 def split_sentences(script: str) -> list[str]:
-    """Paragraphs, then sentences within them; whitespace normalised. Order is preserved."""
+    """Paragraphs, then sentences within them; whitespace normalised. Order is preserved.
+    Over-long sentences become clause-sized units (see _split_long) so they can form several beats."""
     sentences = []
     for paragraph in _PARAGRAPH_BREAK.split(script):
         paragraph = " ".join(paragraph.split())
-        sentences.extend(s.strip() for s in _split_keep_punctuation(paragraph) if s.strip())
+        for s in _split_keep_punctuation(paragraph):
+            if s.strip():
+                sentences.extend(_split_long(s.strip()))
     return sentences
 
 

@@ -176,6 +176,12 @@ export default function ScriptToBeatView({
   const estimatedSeconds = Math.round(wordCount / 2.3)
   const plan = useMemo(() => buildPlan(beats), [beats])
   const totalDuration = plan.reduce((acc, seg) => acc + seg.duration, 0)
+  // Strip items: every planned clip in sequence order; beats without footage get one empty tile.
+  const stripItems = beats.flatMap((beat) => {
+    const segs = plan.map((seg, planIndex) => ({ seg, planIndex })).filter(({ seg }) => seg.beatId === beat.id)
+    if (segs.length === 0) return [{ beat, seg: null as Segment | null, planIndex: -1, shotNumber: 1, shotCount: 1 }]
+    return segs.map(({ seg, planIndex }, i) => ({ beat, seg: seg as Segment | null, planIndex, shotNumber: i + 1, shotCount: segs.length }))
+  })
   const pickerBeat = beats.find((b) => b.id === showClipPickerForBeatId) ?? null
   const pickerClips = pickerBeat?.candidates ?? []
 
@@ -624,28 +630,30 @@ export default function ScriptToBeatView({
             <div className="flex items-center justify-between text-[11px] font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-2">
               <span>Sequence Timeline Flow ({totalDuration.toFixed(1)}s Total)</span>
               <span className="text-[10px] text-[var(--text-muted)] font-mono">
-                {beats.length} Clips in Series
+                {stripItems.filter((item) => item.seg).length} Clips in Series &bull; {beats.length} Beats
               </span>
             </div>
 
+            {/* One tile per clip in the playback plan (a beat can have several paced clips), in order. */}
             <div className="flex items-center gap-2 overflow-x-auto pb-1">
-              {beats.map((beat, idx) => {
-                const isSelected = beat.id === selectedBeatId
-                const clip = beat.assigned_clip
+              {stripItems.map((item, idx) => {
+                const { beat, seg, planIndex } = item
+                const isActive =
+                  seg && playbackMode === 'sequence' ? activeSeg === seg : beat.id === selectedBeatId
+                const clip = seg?.clip ?? null
 
                 return (
-                  <div key={beat.id} className="flex items-center gap-2 shrink-0">
+                  <div key={seg ? `${beat.id}-${planIndex}` : beat.id} className="flex items-center gap-2 shrink-0">
                     <button
                       onClick={() => {
                         onSelectBeat(beat.id)
-                        if (playbackMode === 'sequence') {
-                          const idx = plan.findIndex((seg) => seg.beatId === beat.id)
-                          setSegIndex(Math.max(idx, 0))
+                        if (playbackMode === 'sequence' && planIndex >= 0) {
+                          setSegIndex(planIndex)
                           setSegElapsed(0)
                         }
                       }}
                       className={`relative w-28 h-16 rounded-lg overflow-hidden border text-left flex flex-col justify-between p-1.5 transition-all ${
-                        isSelected
+                        isActive
                           ? 'border-blue-500 ring-2 ring-blue-500/40 shadow-xs'
                           : 'border-[var(--border-subtle)] opacity-75 hover:opacity-100'
                       }`}
@@ -663,15 +671,16 @@ export default function ScriptToBeatView({
                       )}
 
                       <div className="relative z-10 bg-black/75 px-1 py-0.5 rounded text-[9px] font-mono text-white inline-block">
-                        B{beat.beat_number} &bull; {beat.editorial_intent}
+                        B{beat.beat_number}
+                        {item.shotCount > 1 ? `.${item.shotNumber}` : ''} &bull; {beat.editorial_intent}
                       </div>
 
                       <div className="relative z-10 bg-black/75 px-1 py-0.5 rounded text-[8px] font-mono text-slate-300 self-end">
-                        {beatSeconds(beat).toFixed(1)}s
+                        {(seg ? seg.duration : 0).toFixed(1)}s
                       </div>
                     </button>
 
-                    {idx < beats.length - 1 && (
+                    {idx < stripItems.length - 1 && (
                       <ArrowRight className="w-3.5 h-3.5 text-[var(--text-muted)] shrink-0" />
                     )}
                   </div>
