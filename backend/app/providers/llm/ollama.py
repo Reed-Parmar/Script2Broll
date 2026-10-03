@@ -9,13 +9,17 @@ from app.providers.llm.base import LLMProvider
 class OllamaLLMProvider(LLMProvider):
     name = "ollama"
 
-    def __init__(self, base_url: str, model: str, timeout_seconds: float = 60.0, client: httpx.Client | None = None):
+    def __init__(self, base_url: str, model: str, timeout_seconds: float = 60.0, client: httpx.Client | None = None,
+                 num_ctx: int | None = None):
         self.model = model
+        self._num_ctx = num_ctx
         self._base_url = base_url.rstrip("/")
         self._client = client or httpx.Client(timeout=timeout_seconds)
 
     def generate(self, prompt: str, json_schema: dict | None = None) -> str:
         payload: dict = {"model": self.model, "prompt": prompt, "stream": False, "options": {"temperature": 0, "seed": 0}}
+        if self._num_ctx:
+            payload["options"]["num_ctx"] = self._num_ctx  # avoid silent prompt truncation
         if json_schema is not None:
             payload["format"] = json_schema  # constrained decoding to the schema
         data = self._request("POST", "/api/generate", json=payload)

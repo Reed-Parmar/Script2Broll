@@ -5,11 +5,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api import editorial, health, script, search
+from app.api import editorial, health, remote, script, search
 from app.config import get_settings
 from app.providers.errors import ProviderError, ProviderNotConfigured
 
 log = logging.getLogger(__name__)
+# httpx logs full request URLs at INFO, and Pixabay puts the API key in the query string.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 async def _provider_error(_: Request, exc: ProviderError) -> JSONResponse:
@@ -38,6 +41,7 @@ def create_app() -> FastAPI:
     app.include_router(search.router)
     app.include_router(editorial.router)
     app.include_router(script.router)
+    app.include_router(remote.router)
     return app
 
 

@@ -51,6 +51,18 @@ class Video(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ProviderCache(Base):
+    """Cached cloud-provider responses (Pixabay requires caching requests for 24 hours)."""
+
+    __tablename__ = "provider_cache"
+
+    provider: Mapped[str] = mapped_column(String(32), primary_key=True)
+    request_key: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256 of params (no API key)
+    params: Mapped[dict] = mapped_column(JSONB)
+    response: Mapped[dict] = mapped_column(JSONB)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 class Embedding(Base):
     __tablename__ = "embeddings"
     __table_args__ = (

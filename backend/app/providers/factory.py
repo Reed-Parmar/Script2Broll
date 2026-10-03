@@ -24,7 +24,9 @@ def build_llm_provider(settings: Settings) -> LLMProvider:
     if settings.llm_provider == "ollama":
         from app.providers.llm.ollama import OllamaLLMProvider
 
-        return OllamaLLMProvider(settings.ollama_url, settings.ollama_model, settings.llm_timeout_seconds)
+        return OllamaLLMProvider(
+            settings.ollama_url, settings.ollama_model, settings.llm_timeout_seconds, num_ctx=settings.ollama_num_ctx
+        )
     raise ProviderNotConfigured(f"Unknown LLM_PROVIDER '{settings.llm_provider}'")
 
 
@@ -49,6 +51,23 @@ def build_video_source(settings: Settings) -> VideoSourceProvider:
     from app.providers.video_source.pixabay import PixabayVideoProvider
 
     return PixabayVideoProvider(_secret(settings.pixabay_api_key), settings.external_timeout_seconds)
+
+
+def build_cloud_sources(settings: Settings) -> dict[str, VideoSourceProvider | None]:
+    """Query-time cloud providers from CLOUD_PROVIDERS. Misconfigured ones map to None ("not_configured")."""
+    sources: dict[str, VideoSourceProvider | None] = {}
+    for name in settings.cloud_providers:
+        name = name.strip().lower()
+        try:
+            if name == "pixabay":
+                from app.providers.video_source.pixabay import PixabayVideoProvider
+
+                sources[name] = PixabayVideoProvider(_secret(settings.pixabay_api_key), settings.cloud_timeout_seconds)
+            else:
+                sources[name] = None
+        except ProviderNotConfigured:
+            sources[name] = None
+    return sources
 
 
 def build_vector_store() -> VectorStore:

@@ -20,6 +20,9 @@ from sqlalchemy.orm import Session
 from app.providers.errors import ProviderError
 from app.providers.llm.base import LLMProvider
 from app.services.editorial import EditorialIntentAnalyzer, EditorialIntentResult, load_json_object
+from app.services.broll_retrieval import BeatRequest, BrollRetrievalService, RetrievalPolicy, SourceStatus
+from app.services.candidates import BrollCandidate
+from app.services.vibe import BeatVibe, VibeAnalyzer, VibeScorer, VibeTags
 from app.services.retrieval import MultiQueryHit, SemanticSearchService, multi_query_search
 
 log = logging.getLogger(__name__)
@@ -190,6 +193,9 @@ class BeatResult:
     hits: list[MultiQueryHit] = field(default_factory=list)
     error: str | None = None  # set when this beat's analysis or search failed
     warnings: list[str] = field(default_factory=list)  # non-fatal problems, e.g. one query failed
+    candidates: list[BrollCandidate] = field(default_factory=list)  # Phase 5: local + cloud, labelled
+    source_status: dict[str, SourceStatus] = field(default_factory=dict)
+    vibe: BeatVibe | None = None  # Phase 7
 
     @property
     def beat_id(self) -> str:
@@ -211,13 +217,21 @@ class ScriptAnalysis:
 class ScriptAnalysisService:
     """Orchestrates segmentation, the existing editorial analyzer and the existing semantic search."""
 
-    def __init__(self, segmenter: ScriptSegmenter, analyzer: EditorialIntentAnalyzer, search: SemanticSearchService):
+    def __init__(self, segmenter: ScriptSegmenter, analyzer: EditorialIntentAnalyzer, search: SemanticSearchService,
+                 retrieval: BrollRetrievalService | None = None, vibe: VibeAnalyzer | None = None):
+        self.vibe = vibe
         self.segmenter = segmenter
         self.analyzer = analyzer
         self.search = search
+        self.retrieval = retrieval
 
-    def analyze(self, session: Session, script: str, top_k: int) -> ScriptAnalysis:
+    def analyze(self, session: Session, script: str, top_k: int, policy: RetrievalPolicy | None = None,
+                vibe_selected: dict[str, VibeTags] | None = None, vibe_global: VibeTags | None = None,
+                suggest_vibe: bool = True) -> ScriptAnalysis:
         started = time.perf_counter()
+        self._vibe_selected, self._vibe_global, self._suggest_vibe = vibe_selected or {}, vibe_global, suggest_vibe
+        self._policy = policy or RetrievalPolicy(local_k=top_k)
+        self._budget = self.retrieval.new_budget() if self.retrieval else None
         segmentation = self.segmenter.segment_with_fallback(script)
         segmented = time.perf_counter()
         texts = segmentation.beats
@@ -255,13 +269,44 @@ class ScriptAnalysisService:
             beat.editorial = self.analyzer.analyze(text, previous=previous)
             t1 = time.perf_counter()
             timings["analysis"] += t1 - t0
-            outcome = multi_query_search(self.search, session, beat.queries, top_k)
+            if self.retrieval is None:
+                outcome = multi_query_search(self.search, session, beat.queries, top_k)
+                beat.hits = outcome.hits
+                beat.warnings = [f"Query '{q}' failed: {err}" for q, err in outcome.failed_queries.items()]
+            else:
+                e = beat.editorial
+                request = BeatRequest(beat.queries, e.topic, [e.visual_description, *e.filmable_visuals])
+                result = self.retrieval.retrieve(session, request, self._policy, self._budget)
+                beat.hits, beat.candidates, beat.source_status = result.local_hits, result.candidates, result.source_status
+                beat.warnings = result.warnings
+                self._apply_vibe(session, beat, previous)
             timings["retrieval"] += time.perf_counter() - t1
-            beat.hits = outcome.hits
-            beat.warnings = [f"Query '{q}' failed: {err}" for q, err in outcome.failed_queries.items()]
         except ProviderError as exc:
             # One bad LLM reply or embedding failure should not discard the other beats. Database
             # errors are not caught: they affect every beat and fail the request (503).
             log.warning("Beat %d failed: %s", order, exc)
             beat.error = str(exc)  # ProviderError messages are client-safe
         return beat
+
+    def _apply_vibe(self, session, beat: BeatResult, previous: str | None) -> None:
+        """Suggest tags (LLM), pick the active tags, re-order candidates. Never fails the beat."""
+        suggested = None
+        if self.vibe is not None and self._suggest_vibe:
+            e = beat.editorial
+            try:
+                suggested = self.vibe.suggest(beat.text, e.editorial_intent.value, e.visual_description, previous)
+            except ProviderError as exc:
+                beat.warnings.append(f"Vibe suggestion failed: {exc}")
+        user = self._vibe_selected.get(beat.beat_id) or self._vibe_global
+        if user is not None:
+            selected, source = user, "user"
+        elif suggested is not None:
+            selected, source = suggested, "suggested"
+        else:
+            selected, source = VibeTags(), "none"
+        beat.vibe = BeatVibe(suggested=suggested, selected=selected, source=source)
+        if not selected.is_empty() and beat.candidates:
+            try:
+                beat.candidates = VibeScorer(self.search.embedder).rerank(session, beat.candidates, selected)
+            except ProviderError as exc:
+                beat.warnings.append(f"Vibe scoring skipped: {exc}")

@@ -50,6 +50,26 @@ class Settings(BaseSettings):
     data_dir: Path = REPO_ROOT / "data"
     frames_per_video: int = 8
 
+    # Ollama context window (prompt truncation guard)
+    ollama_num_ctx: int = 8192
+
+    # Phase 5: query-time cloud retrieval (off unless CLOUD_PROVIDERS is set)
+    cloud_providers: list[str] = []
+    retrieval_cloud_k: int = 0
+    cloud_queries_per_beat: int = 1
+    cloud_max_requests_per_script: int = 20
+    cloud_timeout_seconds: float = 5.0
+    provider_cache_ttl_hours: float = 24.0
+
+    # Phase 7: vibe tag suggestions (one extra LLM call per beat)
+    vibe_suggest: bool = True
+
+    # Phase 8: pacing
+    pacing_words_per_minute: float = 150.0
+    pacing_min_shot_seconds: float = 1.5
+    pacing_max_shot_seconds: float = 8.0
+    pacing_max_shots_per_beat: int = 3
+
     # HTTP
     cors_origins: list[str] = ["http://localhost:5173"]
     external_timeout_seconds: float = 10.0
