@@ -13,13 +13,19 @@ def _secret(value) -> str | None:
 
 
 def build_llm_provider(settings: Settings) -> LLMProvider:
-    from app.providers.llm.gemini import GeminiLLMProvider
+    if settings.llm_provider == "gemini":
+        from app.providers.llm.gemini import GeminiLLMProvider
 
-    return GeminiLLMProvider(
-        _secret(settings.gemini_api_key),
-        settings.gemini_llm_model,
-        settings.external_timeout_seconds,
-    )
+        return GeminiLLMProvider(
+            _secret(settings.gemini_api_key),
+            settings.gemini_llm_model,
+            settings.llm_timeout_seconds,
+        )
+    if settings.llm_provider == "ollama":
+        from app.providers.llm.ollama import OllamaLLMProvider
+
+        return OllamaLLMProvider(settings.ollama_url, settings.ollama_model, settings.llm_timeout_seconds)
+    raise ProviderNotConfigured(f"Unknown LLM_PROVIDER '{settings.llm_provider}'")
 
 
 def build_embedding_provider(settings: Settings) -> EmbeddingProvider:

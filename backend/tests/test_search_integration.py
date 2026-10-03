@@ -217,6 +217,62 @@ def test_search_request_end_to_end(ingest, client, store):
     assert client.get(f"/v1/videos/{hit['video_id']}").json()["creator"] == "tester"
 
 
+@requires_ffmpeg
+def test_editorial_search_end_to_end(ingest, client, store, monkeypatch):
+    """Script line -> (fake) LLM analysis -> retrieval query -> real pgvector search -> clip."""
+    import json
+
+    from app.providers import factory
+    from tests.test_editorial import FakeLLM
+
+    service, embedder, _ = ingest
+    service.ingest_query("electric car", limit=5)
+    client.app.dependency_overrides[search_api.get_search_service] = lambda: SemanticSearchService(embedder, store)
+    # The script line never says "car"; only the LLM's visual description does (the fake embedder
+    # maps "car" texts onto the clips' axis), so a hit proves the retrieval query was searched.
+    llm = FakeLLM(reply=json.dumps({
+        "topic": "charging infrastructure", "editorial_intent": "problem",
+        "visual_role": "show the bottleneck", "visual_description": "a queue of cars at a charging station",
+    }))
+    monkeypatch.setattr(factory, "build_llm_provider", lambda _: llm)
+
+    sentence = "Infrastructure has not kept pace with demand."
+    semantic = client.post("/v1/search", json={"query": sentence}).json()["results"]
+    editorial = client.post("/v1/search", json={"query": sentence, "mode": "editorial"}).json()
+
+    assert semantic[0]["score"] == pytest.approx(0.0)
+    assert editorial["retrieval_query"] == "charging infrastructure, a queue of cars at a charging station"
+    [hit] = editorial["results"]
+    assert (hit["source_id"], hit["score"]) == ("good", pytest.approx(1.0))
+
+
+@requires_ffmpeg
+def test_script_analysis_end_to_end(ingest, client, store, monkeypatch):
+    """Script -> beats -> (fake) editorial analysis -> real pgvector search, per beat."""
+    import json
+
+    from app.providers import factory
+    from tests.test_script import ScriptedLLM
+
+    service, embedder, _ = ingest
+    service.ingest_query("electric car", limit=5)
+    client.app.dependency_overrides[search_api.get_search_service] = lambda: SemanticSearchService(embedder, store)
+
+    def editorial(text):  # beat 1 describes cars (matches the clip's axis), beat 2 an office (does not)
+        shot = "cars on a road" if "roads" in text else "an office"
+        return json.dumps({"topic": "x", "editorial_intent": "context", "visual_role": "r", "visual_description": shot})
+
+    llm = ScriptedLLM(segmentation={"beats": [{"sentences": [1]}, {"sentences": [2]}]}, editorial=editorial)
+    monkeypatch.setattr(factory, "build_llm_provider", lambda _: llm)
+
+    body = client.post("/v1/script/analyze", json={"script": "Traffic fills the roads. Then work begins.", "top_k": 3}).json()
+
+    first, second = body["beats"]
+    assert (first["retrieval_query"], second["retrieval_query"]) == ("cars on a road", "an office")
+    assert first["broll_results"][0]["source_id"] == "good" and first["broll_results"][0]["score"] == pytest.approx(1.0)
+    assert second["broll_results"][0]["score"] == pytest.approx(0.0)
+
+
 def test_unknown_video_404(client, db_engine):
     assert client.get("/v1/videos/987654321").status_code == 404
     assert client.get("/v1/videos/987654321/file").status_code == 404

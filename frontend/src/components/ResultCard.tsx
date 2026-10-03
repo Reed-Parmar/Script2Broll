@@ -6,7 +6,7 @@ function formatDuration(seconds: number | null) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
-export default function ResultCard({ result, rank }: { result: SearchResult; rank: number }) {
+export default function ResultCard({ result, rank, note }: { result: SearchResult; rank: number; note?: string }) {
   return (
     <li className="overflow-hidden rounded-lg border border-slate-200 bg-white">
       <video
@@ -41,6 +41,7 @@ export default function ResultCard({ result, rank }: { result: SearchResult; ran
           )}
         </div>
         {result.tags.length > 0 && <div className="truncate text-xs text-slate-400">{result.tags.join(', ')}</div>}
+        {note && <div className="truncate text-xs text-indigo-700">{note}</div>}
       </div>
     </li>
   )

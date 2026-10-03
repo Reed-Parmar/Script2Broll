@@ -22,9 +22,18 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+psycopg://script2broll:script2broll@localhost:5432/script2broll"
 
+    # Language model for editorial-intent analysis (not used for embeddings).
+    # gemini: hosted, needs GEMINI_API_KEY with billing. ollama: local server, no key.
+    llm_provider: str = "gemini"
+    llm_timeout_seconds: float = 60.0
+
     # Gemini (LLM; also an optional embedding provider)
     gemini_api_key: SecretStr | None = None
     gemini_llm_model: str = "gemini-2.5-flash"
+
+    # Ollama (local LLM server)
+    ollama_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5:3b"
 
     # Embeddings. The provider/model/dimension triple defines the vector space;
     # changing any of them means re-embedding the library.
