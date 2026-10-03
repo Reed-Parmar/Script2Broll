@@ -30,6 +30,7 @@ interface TopBarProps {
   healthSummary: HealthResult | null
   beatCount: number
   assignedCount: number
+  onReplayIntro?: () => void
 }
 
 export default function TopBar({
@@ -48,6 +49,7 @@ export default function TopBar({
   healthSummary,
   beatCount,
   assignedCount,
+  onReplayIntro,
 }: TopBarProps) {
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [tempTitle, setTempTitle] = useState(projectTitle)
@@ -85,15 +87,19 @@ export default function TopBar({
     <header className="h-12 border-b border-[#242735] bg-[#121319] px-4 flex items-center justify-between select-none">
       {/* Left: Brand & Project Name */}
       <div className="flex items-center gap-4 min-w-0">
-        <div className="flex items-center gap-2 text-slate-200">
-          <div className="w-7 h-7 rounded bg-blue-600/20 border border-blue-500/40 flex items-center justify-center text-blue-400">
+        <button
+          onClick={onReplayIntro}
+          title="Replay Studio Intro"
+          className="flex items-center gap-2 text-slate-200 hover:text-white group transition-colors"
+        >
+          <div className="w-7 h-7 rounded bg-blue-600/20 border border-blue-500/40 flex items-center justify-center text-blue-400 group-hover:bg-blue-600/30 group-hover:scale-105 transition-all">
             <Film className="w-4 h-4" />
           </div>
           <span className="font-semibold text-sm tracking-tight text-slate-100 hidden sm:inline">
             Script2Broll
           </span>
           <span className="text-xs text-[#5e6475] hidden md:inline">|</span>
-        </div>
+        </button>
 
         {/* Project Title Editor */}
         <div className="flex items-center gap-2 min-w-0">

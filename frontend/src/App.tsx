@@ -7,6 +7,7 @@ import Timeline from './components/timeline/Timeline'
 import Storyboard from './components/timeline/Storyboard'
 import GenerationModal from './components/modals/GenerationModal'
 import HealthModal from './components/modals/HealthModal'
+import CinematicIntro from './components/intro/CinematicIntro'
 import { SAMPLE_SCRIPTS, LOCAL_LIBRARY_CLIPS } from './data/libraryData'
 import { analyzeScriptToBeats } from './utils/editorialAnalysis'
 import { getHealth, searchVideos, type HealthResult } from './api/client'
@@ -64,6 +65,9 @@ export default function App() {
   // Diagnostics State
   const [isHealthOpen, setIsHealthOpen] = useState(false)
   const [healthSummary, setHealthSummary] = useState<HealthResult | null>(null)
+
+  // Cinematic Intro on refresh / restart
+  const [showIntro, setShowIntro] = useState(true)
 
   // Calculate total duration across all beats
   const totalDuration = project.beats.reduce((acc, b) => {
@@ -396,6 +400,7 @@ export default function App() {
         healthSummary={healthSummary}
         beatCount={project.beats.length}
         assignedCount={assignedCount}
+        onReplayIntro={() => setShowIntro(true)}
       />
 
       {/* Main Workspace (3-Column Layout: Left Script, Center Player, Right Inspector) */}
@@ -497,6 +502,11 @@ export default function App() {
         isOpen={isHealthOpen}
         onClose={() => setIsHealthOpen(false)}
       />
+
+      {/* Cinematic Studio Intro on refresh/restart */}
+      {showIntro && (
+        <CinematicIntro onComplete={() => setShowIntro(false)} />
+      )}
     </div>
   )
 }
